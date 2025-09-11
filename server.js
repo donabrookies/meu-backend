@@ -18,6 +18,11 @@ async function getData() {
     const response = await fetch(`https://api.jsonbin.io/v3/b/${BIN_ID}/latest`, {
       headers: { "X-Master-Key": API_KEY }
     });
+    
+    if (!response.ok) {
+      throw new Error(`Erro ao buscar dados: ${response.status} ${response.statusText}`);
+    }
+    
     const data = await response.json();
     return data.record || { products: [], categories: [] };
   } catch (error) {
@@ -38,6 +43,11 @@ async function saveData(data) {
       },
       body: JSON.stringify(data)
     });
+    
+    if (!response.ok) {
+      throw new Error(`Erro ao salvar dados: ${response.status} ${response.statusText}`);
+    }
+    
     const result = await response.json();
     return result;
   } catch (error) {
@@ -46,7 +56,36 @@ async function saveData(data) {
   }
 }
 
-// Endpoint para obter produtos
+// Endpoints que seu frontend está tentando acessar
+app.post("/save-data", async (req, res) => {
+  try {
+    const dataToSave = req.body;
+    const result = await saveData(dataToSave);
+    res.json({ success: true, result });
+  } catch (error) {
+    console.error("Erro ao salvar dados:", error);
+    res.status(500).json({ 
+      success: false, 
+      error: "Erro ao salvar dados",
+      message: error.message 
+    });
+  }
+});
+
+app.get("/load-data", async (req, res) => {
+  try {
+    const data = await getData();
+    res.json(data);
+  } catch (error) {
+    console.error("Erro ao carregar dados:", error);
+    res.status(500).json({ 
+      error: "Erro ao carregar dados",
+      message: error.message 
+    });
+  }
+});
+
+// Seus endpoints existentes (mantidos para compatibilidade)
 app.get("/api/products", async (req, res) => {
   try {
     const data = await getData();
@@ -57,7 +96,6 @@ app.get("/api/products", async (req, res) => {
   }
 });
 
-// Endpoint para obter categorias
 app.get("/api/categories", async (req, res) => {
   try {
     const data = await getData();
@@ -68,7 +106,6 @@ app.get("/api/categories", async (req, res) => {
   }
 });
 
-// Endpoint para salvar produtos
 app.post("/api/products", async (req, res) => {
   try {
     const { products } = req.body;
@@ -82,7 +119,6 @@ app.post("/api/products", async (req, res) => {
   }
 });
 
-// Endpoint para salvar categorias
 app.post("/api/categories", async (req, res) => {
   try {
     const { categories } = req.body;
@@ -102,7 +138,6 @@ app.post("/api/auth/login", async (req, res) => {
     const { username, password } = req.body;
     
     // Autenticação básica para desenvolvimento
-    // Em produção, use um sistema de autenticação adequado
     if (username === "admin" && password === "admin123") {
       res.json({ 
         success: true, 
@@ -121,7 +156,6 @@ app.post("/api/auth/login", async (req, res) => {
 // Endpoint para verificar autenticação
 app.get("/api/auth/verify", async (req, res) => {
   try {
-    // Verificação simplificada para desenvolvimento
     const token = req.headers.authorization?.replace("Bearer ", "");
     
     if (token === "dev-token-admin") {
@@ -137,7 +171,16 @@ app.get("/api/auth/verify", async (req, res) => {
 
 // Endpoint padrão para health check
 app.get("/", (req, res) => {
-  res.json({ message: "Backend Urban Z está funcionando!", status: "OK" });
+  res.json({ 
+    message: "Backend Urban Z está funcionando!", 
+    status: "OK",
+    endpoints: {
+      saveData: "POST /save-data",
+      loadData: "GET /load-data",
+      products: "GET /api/products",
+      categories: "GET /api/categories"
+    }
+  });
 });
 
 const PORT = process.env.PORT || 3000;
