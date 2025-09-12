@@ -2,6 +2,7 @@ import express from "express";
 import fetch from "node-fetch";
 import cors from "cors";
 import dotenv from "dotenv";
+import jwt from "jsonwebtoken"; // Adicione esta dependência
 
 dotenv.config();
 
@@ -11,6 +12,7 @@ app.use(express.json());
 
 const BIN_ID = process.env.JSONBIN_BIN_ID;
 const API_KEY = process.env.JSONBIN_API_KEY;
+const JWT_SECRET = process.env.JWT_SECRET || "seu_jwt_secreto_aqui"; // Adicione esta linha
 
 // Função para buscar dados do JSONBin
 async function getData() {
@@ -56,8 +58,26 @@ async function saveData(data) {
   }
 }
 
+// Middleware para verificar autenticação
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({ error: 'Token de acesso necessário' });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ error: 'Token inválido' });
+    }
+    req.user = user;
+    next();
+  });
+}
+
 // Endpoints que seu frontend está tentando acessar
-app.post("/save-data", async (req, res) => {
+app.post("/save-data", authenticateToken, async (req, res) => {
   try {
     const dataToSave = req.body;
     const result = await saveData(dataToSave);
@@ -106,7 +126,7 @@ app.get("/api/categories", async (req, res) => {
   }
 });
 
-app.post("/api/products", async (req, res) => {
+app.post("/api/products", authenticateToken, async (req, res) => {
   try {
     const { products } = req.body;
     const data = await getData();
@@ -119,7 +139,7 @@ app.post("/api/products", async (req, res) => {
   }
 });
 
-app.post("/api/categories", async (req, res) => {
+app.post("/api/categories", authenticateToken, async (req, res) => {
   try {
     const { categories } = req.body;
     const data = await getData();
@@ -132,16 +152,23 @@ app.post("/api/categories", async (req, res) => {
   }
 });
 
-// Endpoint de autenticação (simplificado para desenvolvimento)
+// Endpoint de autenticação (agora com JWT)
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { username, password } = req.body;
     
     // Autenticação básica para desenvolvimento
     if (username === "admin" && password === "admin123") {
+      // Criar token JWT
+      const token = jwt.sign(
+        { username: username, id: 1 }, 
+        JWT_SECRET, 
+        { expiresIn: '15m' } // Token expira em 15 minutos
+      );
+      
       res.json({ 
         success: true, 
-        token: "dev-token-admin", 
+        token: token, 
         user: { username: "admin" } 
       });
     } else {
@@ -156,13 +183,19 @@ app.post("/api/auth/login", async (req, res) => {
 // Endpoint para verificar autenticação
 app.get("/api/auth/verify", async (req, res) => {
   try {
-    const token = req.headers.authorization?.replace("Bearer ", "");
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
     
-    if (token === "dev-token-admin") {
-      res.json({ valid: true, user: { username: "admin" } });
-    } else {
-      res.json({ valid: false });
+    if (!token) {
+      return res.json({ valid: false });
     }
+    
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+      if (err) {
+        return res.json({ valid: false });
+      }
+      res.json({ valid: true, user: user });
+    });
   } catch (error) {
     console.error("Erro ao verificar autenticação:", error);
     res.status(500).json({ error: "Erro ao verificar autenticação" });
