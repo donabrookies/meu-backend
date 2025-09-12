@@ -2,7 +2,6 @@ import express from "express";
 import fetch from "node-fetch";
 import cors from "cors";
 import dotenv from "dotenv";
-import crypto from "crypto";
 
 dotenv.config();
 
@@ -12,33 +11,6 @@ app.use(express.json());
 
 const BIN_ID = process.env.JSONBIN_BIN_ID;
 const API_KEY = process.env.JSONBIN_API_KEY;
-
-// Função para criptografar (mesma lógica do frontend)
-function simpleEncrypt(text) {
-  return Buffer.from(text).toString('base64').split('').reverse().join('');
-}
-
-// Função para descriptografar (mesma lógica do frontend)
-function simpleDecrypt(encrypted) {
-  return Buffer.from(encrypted.split('').reverse().join(''), 'base64').toString('utf8');
-}
-
-// Credenciais de administrador (em produção, use variáveis de ambiente)
-const ADMIN_CREDENTIALS = {
-  username: simpleEncrypt('admin'),
-  password: simpleEncrypt('admin123')
-};
-
-// Middleware para verificar autenticação
-function requireAuth(req, res, next) {
-  const token = req.headers.authorization?.replace("Bearer ", "");
-  
-  if (token && token === "dev-token-admin") {
-    next();
-  } else {
-    res.status(401).json({ error: "Acesso não autorizado" });
-  }
-}
 
 // Função para buscar dados do JSONBin
 async function getData() {
@@ -84,14 +56,89 @@ async function saveData(data) {
   }
 }
 
-// Endpoint de autenticação
+// Endpoints que seu frontend está tentando acessar
+app.post("/save-data", async (req, res) => {
+  try {
+    const dataToSave = req.body;
+    const result = await saveData(dataToSave);
+    res.json({ success: true, result });
+  } catch (error) {
+    console.error("Erro ao salvar dados:", error);
+    res.status(500).json({ 
+      success: false, 
+      error: "Erro ao salvar dados",
+      message: error.message 
+    });
+  }
+});
+
+app.get("/load-data", async (req, res) => {
+  try {
+    const data = await getData();
+    res.json(data);
+  } catch (error) {
+    console.error("Erro ao carregar dados:", error);
+    res.status(500).json({ 
+      error: "Erro ao carregar dados",
+      message: error.message 
+    });
+  }
+});
+
+// Seus endpoints existentes (mantidos para compatibilidade)
+app.get("/api/products", async (req, res) => {
+  try {
+    const data = await getData();
+    res.json({ products: data.products || [] });
+  } catch (error) {
+    console.error("Erro ao buscar produtos:", error);
+    res.status(500).json({ error: "Erro ao buscar produtos" });
+  }
+});
+
+app.get("/api/categories", async (req, res) => {
+  try {
+    const data = await getData();
+    res.json({ categories: data.categories || [] });
+  } catch (error) {
+    console.error("Erro ao buscar categorias:", error);
+    res.status(500).json({ error: "Erro ao buscar categorias" });
+  }
+});
+
+app.post("/api/products", async (req, res) => {
+  try {
+    const { products } = req.body;
+    const data = await getData();
+    data.products = products;
+    await saveData(data);
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Erro ao salvar produtos:", error);
+    res.status(500).json({ error: "Erro ao salvar produtos" });
+  }
+});
+
+app.post("/api/categories", async (req, res) => {
+  try {
+    const { categories } = req.body;
+    const data = await getData();
+    data.categories = categories;
+    await saveData(data);
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Erro ao salvar categorias:", error);
+    res.status(500).json({ error: "Erro ao salvar categorias" });
+  }
+});
+
+// Endpoint de autenticação (simplificado para desenvolvimento)
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { username, password } = req.body;
     
-    // Verificar credenciais usando a mesma lógica de criptografia do frontend
-    if (simpleEncrypt(username) === ADMIN_CREDENTIALS.username && 
-        simpleEncrypt(password) === ADMIN_CREDENTIALS.password) {
+    // Autenticação básica para desenvolvimento
+    if (username === "admin" && password === "admin123") {
       res.json({ 
         success: true, 
         token: "dev-token-admin", 
@@ -122,85 +169,16 @@ app.get("/api/auth/verify", async (req, res) => {
   }
 });
 
-// Endpoints protegidos (requerem autenticação)
-app.get("/api/products", requireAuth, async (req, res) => {
-  try {
-    const data = await getData();
-    res.json({ products: data.products || [] });
-  } catch (error) {
-    console.error("Erro ao buscar produtos:", error);
-    res.status(500).json({ error: "Erro ao buscar produtos" });
-  }
-});
-
-app.get("/api/categories", requireAuth, async (req, res) => {
-  try {
-    const data = await getData();
-    res.json({ categories: data.categories || [] });
-  } catch (error) {
-    console.error("Erro ao buscar categorias:", error);
-    res.status(500).json({ error: "Erro ao buscar categorias" });
-  }
-});
-
-app.post("/api/products", requireAuth, async (req, res) => {
-  try {
-    const { products } = req.body;
-    const data = await getData();
-    data.products = products;
-    await saveData(data);
-    res.json({ success: true });
-  } catch (error) {
-    console.error("Erro ao salvar produtos:", error);
-    res.status(500).json({ error: "Erro ao salvar produtos" });
-  }
-});
-
-app.post("/api/categories", requireAuth, async (req, res) => {
-  try {
-    const { categories } = req.body;
-    const data = await getData();
-    data.categories = categories;
-    await saveData(data);
-    res.json({ success: true });
-  } catch (error) {
-    console.error("Erro ao salvar categorias:", error);
-    res.status(500).json({ error: "Erro ao salvar categorias" });
-  }
-});
-
-// Endpoints públicos para a loja
-app.get("/api/store/products", async (req, res) => {
-  try {
-    const data = await getData();
-    // Retornar apenas produtos ativos para a loja
-    const activeProducts = (data.products || []).filter(product => product.status === 'active');
-    res.json({ products: activeProducts });
-  } catch (error) {
-    console.error("Erro ao buscar produtos da loja:", error);
-    res.status(500).json({ error: "Erro ao buscar produtos" });
-  }
-});
-
-app.get("/api/store/categories", async (req, res) => {
-  try {
-    const data = await getData();
-    res.json({ categories: data.categories || [] });
-  } catch (error) {
-    console.error("Erro ao buscar categorias da loja:", error);
-    res.status(500).json({ error: "Erro ao buscar categorias" });
-  }
-});
-
 // Endpoint padrão para health check
 app.get("/", (req, res) => {
   res.json({ 
     message: "Backend Urban Z está funcionando!", 
     status: "OK",
     endpoints: {
-      login: "POST /api/auth/login",
-      products: "GET /api/products (requer auth)",
-      storeProducts: "GET /api/store/products (público)"
+      saveData: "POST /save-data",
+      loadData: "GET /load-data",
+      products: "GET /api/products",
+      categories: "GET /api/categories"
     }
   });
 });
