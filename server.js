@@ -21,19 +21,29 @@ const sessions = new Map();
 
 // Middleware de sessão
 app.use((req, res, next) => {
-  const sessionId = req.headers.authorization || req.query.sessionid;
+  const authHeader = req.headers.authorization;
+  let sessionId = null;
+  
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    sessionId = authHeader.substring(7); // Remove "Bearer " do início
+  }
+  
+  sessionId = sessionId || req.query.sessionid;
   
   if (sessionId && sessions.has(sessionId)) {
     const session = sessions.get(sessionId);
     // Verificar se a sessão expirou
     if (session.expires > Date.now()) {
       req.session = session.data;
+      req.sessionId = sessionId;
     } else {
       sessions.delete(sessionId);
       req.session = {};
+      req.sessionId = null;
     }
   } else {
     req.session = {};
+    req.sessionId = null;
   }
   
   req.saveSession = (data, expiresIn = 24 * 60 * 60 * 1000) => {
@@ -66,7 +76,7 @@ const requireAuth = (req, res, next) => {
   if (req.session && req.session.authenticated && req.session.user) {
     next();
   } else {
-    res.status(401).json({ error: "Acesso não autorizado" });
+    res.status(401).json({ error: "Acesso não autorizado. Faça login novamente." });
   }
 };
 
@@ -186,7 +196,7 @@ app.post("/api/auth/login", async (req, res) => {
 });
 
 app.post("/api/auth/logout", (req, res) => {
-  const sessionId = req.headers.authorization;
+  const sessionId = req.sessionId;
   if (sessionId) {
     sessions.delete(sessionId);
   }
@@ -258,7 +268,9 @@ app.post("/api/admin/save-data", requireAuth, async (req, res) => {
 app.get("/api/products", async (req, res) => {
   try {
     const data = await getData();
-    res.json({ products: data.products || [] });
+    // Filtrar apenas produtos ativos para a loja
+    const activeProducts = data.products ? data.products.filter(p => p.status === 'active') : [];
+    res.json({ products: activeProducts });
   } catch (error) {
     console.error("Erro ao buscar produtos:", error);
     res.status(500).json({ error: "Erro ao buscar produtos" });
@@ -275,6 +287,42 @@ app.get("/api/categories", async (req, res) => {
   }
 });
 
+// Endpoint para adicionar produto (protegido)
+app.post("/api/admin/products", requireAuth, async (req, res) => {
+  try {
+    const { product } = req.body;
+    
+    if (!product) {
+      return res.status(400).json({ error: "Dados do produto são obrigatórios" });
+    }
+    
+    const data = await getData();
+    
+    // Gerar ID único para o novo produto
+    const newId = data.products && data.products.length > 0 
+      ? Math.max(...data.products.map(p => p.id)) + 1 
+      : 1;
+    
+    const newProduct = {
+      id: newId,
+      ...product,
+      status: product.status || 'active'
+    };
+    
+    // Adicionar o novo produto
+    if (!data.products) data.products = [];
+    data.products.push(newProduct);
+    
+    // Salvar dados atualizados
+    await saveData(data);
+    
+    res.json({ success: true, product: newProduct });
+  } catch (error) {
+    console.error("Erro ao adicionar produto:", error);
+    res.status(500).json({ error: "Erro ao adicionar produto" });
+  }
+});
+
 // Endpoint padrão para health check
 app.get("/", (req, res) => {
   res.json({ 
@@ -285,7 +333,9 @@ app.get("/", (req, res) => {
       logout: "POST /api/auth/logout",
       checkAuth: "GET /api/auth/check",
       products: "GET /api/products",
-      categories: "GET /api/categories"
+      categories: "GET /api/categories",
+      adminData: "GET /api/admin/data (requer autenticação)",
+      saveData: "POST /api/admin/save-data (requer autenticação)"
     }
   });
 });
