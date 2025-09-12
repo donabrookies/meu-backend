@@ -2,47 +2,61 @@ import express from "express";
 import fetch from "node-fetch";
 import cors from "cors";
 import dotenv from "dotenv";
-import bcrypt from "bcryptjs";
-import session from "express-session";
+import crypto from "crypto";
 
 dotenv.config();
 
 const app = express();
 
-// Configuração de CORS para permitir credenciais
+// Configuração de CORS
 app.use(cors({
-  origin: function(origin, callback) {
-    // Permite requests sem origin (como mobile apps ou curl requests)
-    if (!origin) return callback(null, true);
-    
-    // Verifica se a origin está na lista de permitidas
-    const allowedOrigins = [
-      'https://seusite.com', 
-      'http://localhost:8000',
-      // Adicione outros domínios permitidos aqui
-    ];
-    
-    if (allowedOrigins.indexOf(origin) === -1) {
-      const msg = 'A política de CORS não permite acesso desde esta origem.';
-      return callback(new Error(msg), false);
-    }
-    return callback(null, true);
-  },
+  origin: true,
   credentials: true
 }));
 
 app.use(express.json());
 
-// Configuração de sessão
-app.use(session({
-  secret: process.env.SESSION_SECRET || 'urbanz-session-secret-key-2024',
-  resave: false,
-  saveUninitialized: false,
-  cookie: { 
-    secure: process.env.NODE_ENV === 'production',
-    maxAge: 24 * 60 * 60 * 1000 // 24 horas
+// Sistema de sessão simplificado
+const sessions = new Map();
+
+// Middleware de sessão
+app.use((req, res, next) => {
+  const sessionId = req.headers.authorization || req.query.sessionid;
+  
+  if (sessionId && sessions.has(sessionId)) {
+    const session = sessions.get(sessionId);
+    // Verificar se a sessão expirou
+    if (session.expires > Date.now()) {
+      req.session = session.data;
+    } else {
+      sessions.delete(sessionId);
+      req.session = {};
+    }
+  } else {
+    req.session = {};
   }
-}));
+  
+  req.saveSession = (data, expiresIn = 24 * 60 * 60 * 1000) => {
+    const newSessionId = crypto.randomBytes(16).toString('hex');
+    sessions.set(newSessionId, {
+      data: data,
+      expires: Date.now() + expiresIn
+    });
+    return newSessionId;
+  };
+  
+  next();
+});
+
+// Limpar sessões expiradas periodicamente
+setInterval(() => {
+  const now = Date.now();
+  for (const [sessionId, session] of sessions.entries()) {
+    if (session.expires <= now) {
+      sessions.delete(sessionId);
+    }
+  }
+}, 60 * 60 * 1000); // A cada hora
 
 const BIN_ID = process.env.JSONBIN_BIN_ID;
 const API_KEY = process.env.JSONBIN_API_KEY;
@@ -55,6 +69,11 @@ const requireAuth = (req, res, next) => {
     res.status(401).json({ error: "Acesso não autorizado" });
   }
 };
+
+// Função para criar hash de senha (simplificada)
+function simpleHash(password) {
+  return crypto.createHash('sha256').update(password).digest('hex');
+}
 
 // Função para buscar dados do JSONBin
 async function getData() {
@@ -107,10 +126,9 @@ async function initializeAdmin() {
     
     if (!data.admin) {
       data.admin = {
-        // Senha padrão: "admin123" (será hasheada)
         credentials: {
           username: "admin",
-          passwordHash: await bcrypt.hash("admin123", 10)
+          passwordHash: simpleHash("admin123") // Senha padrão
         }
       };
       await saveData(data);
@@ -137,24 +155,26 @@ app.post("/api/auth/login", async (req, res) => {
     const data = await getData();
     
     if (!data.admin || !data.admin.credentials) {
-      // Se não houver admin configurado, inicialize
       await initializeAdmin();
       return res.status(500).json({ error: "Sistema não configurado. Tente novamente." });
     }
     
     // Verificar credenciais
     const isValidUsername = username === data.admin.credentials.username;
-    const isValidPassword = await bcrypt.compare(password, data.admin.credentials.passwordHash);
+    const isValidPassword = simpleHash(password) === data.admin.credentials.passwordHash;
     
     if (isValidUsername && isValidPassword) {
       // Criar sessão
-      req.session.authenticated = true;
-      req.session.user = { username };
+      const sessionId = req.saveSession({
+        authenticated: true,
+        user: { username }
+      });
       
       res.json({ 
         success: true, 
         message: "Login realizado com sucesso",
-        user: { username }
+        user: { username },
+        sessionId: sessionId
       });
     } else {
       res.status(401).json({ error: "Credenciais inválidas" });
@@ -166,13 +186,11 @@ app.post("/api/auth/login", async (req, res) => {
 });
 
 app.post("/api/auth/logout", (req, res) => {
-  req.session.destroy((err) => {
-    if (err) {
-      return res.status(500).json({ error: "Erro ao fazer logout" });
-    }
-    res.clearCookie('connect.sid');
-    res.json({ success: true, message: "Logout realizado com sucesso" });
-  });
+  const sessionId = req.headers.authorization;
+  if (sessionId) {
+    sessions.delete(sessionId);
+  }
+  res.json({ success: true, message: "Logout realizado com sucesso" });
 });
 
 app.get("/api/auth/check", (req, res) => {
@@ -197,14 +215,14 @@ app.post("/api/auth/change-password", requireAuth, async (req, res) => {
     const data = await getData();
     
     // Verificar senha atual
-    const isValidPassword = await bcrypt.compare(currentPassword, data.admin.credentials.passwordHash);
+    const isValidPassword = simpleHash(currentPassword) === data.admin.credentials.passwordHash;
     
     if (!isValidPassword) {
       return res.status(401).json({ error: "Senha atual incorreta" });
     }
     
     // Atualizar senha
-    data.admin.credentials.passwordHash = await bcrypt.hash(newPassword, 10);
+    data.admin.credentials.passwordHash = simpleHash(newPassword);
     await saveData(data);
     
     res.json({ success: true, message: "Senha alterada com sucesso" });
