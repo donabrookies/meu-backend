@@ -13,11 +13,12 @@ const BIN_ID = process.env.JSONBIN_BIN_ID;
 const API_KEY = process.env.JSONBIN_API_KEY;
 
 // Função para criptografar (apenas para demonstração)
+// Função para criptografar (COMPATÍVEL com Render)
 function simpleEncrypt(text) {
   return Buffer.from(text).toString('base64').split('').reverse().join('');
 }
 
-// Função para descriptografar (apenas para demonstração)
+// Função para descriptografar (COMPATÍVEL com Render)
 function simpleDecrypt(encrypted) {
   return Buffer.from(encrypted.split('').reverse().join(''), 'base64').toString('utf8');
 }
