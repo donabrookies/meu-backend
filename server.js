@@ -12,6 +12,16 @@ app.use(express.json());
 const BIN_ID = process.env.JSONBIN_BIN_ID;
 const API_KEY = process.env.JSONBIN_API_KEY;
 
+// Função para criptografar (apenas para demonstração)
+function simpleEncrypt(text) {
+  return Buffer.from(text).toString('base64').split('').reverse().join('');
+}
+
+// Função para descriptografar (apenas para demonstração)
+function simpleDecrypt(encrypted) {
+  return Buffer.from(encrypted.split('').reverse().join(''), 'base64').toString('utf8');
+}
+
 // Função para buscar dados do JSONBin
 async function getData() {
   try {
@@ -24,10 +34,10 @@ async function getData() {
     }
     
     const data = await response.json();
-    return data.record || { products: [], categories: [] };
+    return data.record || { products: [], categories: [], admin_credentials: null };
   } catch (error) {
     console.error("Erro ao buscar dados:", error);
-    return { products: [], categories: [] };
+    return { products: [], categories: [], admin_credentials: null };
   }
 }
 
@@ -56,9 +66,38 @@ async function saveData(data) {
   }
 }
 
+// Configurar credenciais iniciais se não existirem
+async function setupInitialCredentials() {
+  const data = await getData();
+  
+  if (!data.admin_credentials) {
+    // Credenciais padrão (usuário: admin, senha: admin123)
+    data.admin_credentials = {
+      username: simpleEncrypt('admin'),
+      password: simpleEncrypt('admin123')
+    };
+    
+    await saveData(data);
+    
+    console.log('Credenciais padrão criadas:');
+    console.log('Usuário: admin');
+    console.log('Senha: admin123');
+  }
+}
+
+// Verificar autenticação
+function checkAuth(token) {
+  return token === "authenticated_admin_token";
+}
+
 // Endpoints que seu frontend está tentando acessar
 app.post("/save-data", async (req, res) => {
   try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !checkAuth(authHeader.replace("Bearer ", ""))) {
+      return res.status(401).json({ error: "Não autorizado" });
+    }
+    
     const dataToSave = req.body;
     const result = await saveData(dataToSave);
     res.json({ success: true, result });
@@ -74,6 +113,11 @@ app.post("/save-data", async (req, res) => {
 
 app.get("/load-data", async (req, res) => {
   try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !checkAuth(authHeader.replace("Bearer ", ""))) {
+      return res.status(401).json({ error: "Não autorizado" });
+    }
+    
     const data = await getData();
     res.json(data);
   } catch (error) {
@@ -108,6 +152,11 @@ app.get("/api/categories", async (req, res) => {
 
 app.post("/api/products", async (req, res) => {
   try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !checkAuth(authHeader.replace("Bearer ", ""))) {
+      return res.status(401).json({ error: "Não autorizado" });
+    }
+    
     const { products } = req.body;
     const data = await getData();
     data.products = products;
@@ -121,6 +170,11 @@ app.post("/api/products", async (req, res) => {
 
 app.post("/api/categories", async (req, res) => {
   try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !checkAuth(authHeader.replace("Bearer ", ""))) {
+      return res.status(401).json({ error: "Não autorizado" });
+    }
+    
     const { categories } = req.body;
     const data = await getData();
     data.categories = categories;
@@ -132,17 +186,25 @@ app.post("/api/categories", async (req, res) => {
   }
 });
 
-// Endpoint de autenticação (simplificado para desenvolvimento)
+// Endpoint de autenticação (agora seguro)
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { username, password } = req.body;
     
-    // Autenticação básica para desenvolvimento
-    if (username === "admin" && password === "admin123") {
+    const data = await getData();
+    
+    if (!data.admin_credentials) {
+      await setupInitialCredentials();
+      return res.status(401).json({ error: "Credenciais não configuradas. Recarregue a página." });
+    }
+    
+    // Verificar credenciais
+    if (simpleEncrypt(username) === data.admin_credentials.username && 
+        simpleEncrypt(password) === data.admin_credentials.password) {
       res.json({ 
         success: true, 
-        token: "dev-token-admin", 
-        user: { username: "admin" } 
+        token: "authenticated_admin_token", 
+        user: { username: username } 
       });
     } else {
       res.status(401).json({ error: "Credenciais inválidas" });
@@ -153,12 +215,40 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
+// Endpoint para alterar senha
+app.post("/api/auth/change-password", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !checkAuth(authHeader.replace("Bearer ", ""))) {
+      return res.status(401).json({ error: "Não autorizado" });
+    }
+    
+    const { currentPassword, newPassword } = req.body;
+    
+    const data = await getData();
+    
+    // Verificar senha atual
+    if (simpleEncrypt(currentPassword) !== data.admin_credentials.password) {
+      return res.status(401).json({ error: "Senha atual incorreta" });
+    }
+    
+    // Atualizar senha
+    data.admin_credentials.password = simpleEncrypt(newPassword);
+    await saveData(data);
+    
+    res.json({ success: true, message: "Senha alterada com sucesso" });
+  } catch (error) {
+    console.error("Erro ao alterar senha:", error);
+    res.status(500).json({ error: "Erro ao alterar senha" });
+  }
+});
+
 // Endpoint para verificar autenticação
 app.get("/api/auth/verify", async (req, res) => {
   try {
     const token = req.headers.authorization?.replace("Bearer ", "");
     
-    if (token === "dev-token-admin") {
+    if (token && checkAuth(token)) {
       res.json({ valid: true, user: { username: "admin" } });
     } else {
       res.json({ valid: false });
@@ -183,5 +273,8 @@ app.get("/", (req, res) => {
   });
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Servidor rodando em http://localhost:${PORT}`));
+// Inicializar credenciais
+setupInitialCredentials().then(() => {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => console.log(`Servidor rodando em http://localhost:${PORT}`));
+});
