@@ -12,7 +12,6 @@ app.use(express.json());
 const BIN_ID = process.env.JSONBIN_BIN_ID;
 const API_KEY = process.env.JSONBIN_API_KEY;
 
-// Função para criptografar (apenas para demonstração)
 // Função para criptografar (COMPATÍVEL com Render)
 function simpleEncrypt(text) {
   return Buffer.from(text).toString('base64').split('').reverse().join('');
@@ -67,6 +66,29 @@ async function saveData(data) {
   }
 }
 
+// Normalizar categorias - garantir que sejam objetos
+function normalizeCategories(categories) {
+  if (!Array.isArray(categories)) return [];
+  
+  return categories.map(cat => {
+    if (typeof cat === 'string') {
+      return {
+        id: cat,
+        name: cat.charAt(0).toUpperCase() + cat.slice(1),
+        description: `Categoria de ${cat}`
+      };
+    }
+    if (cat && typeof cat === 'object' && cat.id) {
+      return {
+        id: cat.id,
+        name: cat.name || cat.id.charAt(0).toUpperCase() + cat.id.slice(1),
+        description: cat.description || `Categoria de ${cat.name || cat.id}`
+      };
+    }
+    return null;
+  }).filter(cat => cat !== null);
+}
+
 // Configurar credenciais iniciais se não existirem
 async function setupInitialCredentials() {
   const data = await getData();
@@ -100,6 +122,12 @@ app.post("/save-data", async (req, res) => {
     }
     
     const dataToSave = req.body;
+    
+    // Normalizar categorias antes de salvar
+    if (dataToSave.categories) {
+      dataToSave.categories = normalizeCategories(dataToSave.categories);
+    }
+    
     const result = await saveData(dataToSave);
     res.json({ success: true, result });
   } catch (error) {
@@ -120,6 +148,12 @@ app.get("/load-data", async (req, res) => {
     }
     
     const data = await getData();
+    
+    // Normalizar categorias antes de retornar
+    if (data.categories) {
+      data.categories = normalizeCategories(data.categories);
+    }
+    
     res.json(data);
   } catch (error) {
     console.error("Erro ao carregar dados:", error);
@@ -144,7 +178,28 @@ app.get("/api/products", async (req, res) => {
 app.get("/api/categories", async (req, res) => {
   try {
     const data = await getData();
-    res.json({ categories: data.categories || [] });
+    
+    // Normalizar categorias antes de retornar
+    let categories = data.categories || [];
+    categories = normalizeCategories(categories);
+    
+    // Se não há categorias, retornar as padrão
+    if (categories.length === 0) {
+      categories = [
+        {
+          id: 'camisa',
+          name: 'Camisas',
+          description: 'Camisas de diversos modelos e estilos'
+        },
+        {
+          id: 'short',
+          name: 'Shorts',
+          description: 'Shorts para o dia a dia e prática esportiva'
+        }
+      ];
+    }
+    
+    res.json({ categories });
   } catch (error) {
     console.error("Erro ao buscar categorias:", error);
     res.status(500).json({ error: "Erro ao buscar categorias" });
@@ -161,6 +216,7 @@ app.post("/api/products", async (req, res) => {
     const { products } = req.body;
     const data = await getData();
     data.products = products;
+    data.lastUpdated = new Date().toISOString();
     await saveData(data);
     res.json({ success: true });
   } catch (error) {
@@ -178,7 +234,11 @@ app.post("/api/categories", async (req, res) => {
     
     const { categories } = req.body;
     const data = await getData();
-    data.categories = categories;
+    
+    // Normalizar categorias antes de salvar
+    data.categories = normalizeCategories(categories);
+    data.lastUpdated = new Date().toISOString();
+    
     await saveData(data);
     res.json({ success: true });
   } catch (error) {
@@ -269,7 +329,8 @@ app.get("/", (req, res) => {
       saveData: "POST /save-data",
       loadData: "GET /load-data",
       products: "GET /api/products",
-      categories: "GET /api/categories"
+      categories: "GET /api/categories",
+      login: "POST /api/auth/login"
     }
   });
 });
