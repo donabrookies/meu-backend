@@ -1,72 +1,33 @@
 import express from "express";
-import fetch from "node-fetch";
 import cors from "cors";
 import dotenv from "dotenv";
+import { createClient } from '@supabase/supabase-js';
 
 dotenv.config();
 
 const app = express();
+
+// Configuração do Supabase
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_KEY;
+const supabase = createClient(supabaseUrl, supabaseKey);
+
+// Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-const BIN_ID = process.env.JSONBIN_BIN_ID;
-const API_KEY = process.env.JSONBIN_API_KEY;
-
-// Função para criptografar (COMPATÍVEL com Render)
+// Função para criptografar
 function simpleEncrypt(text) {
   return Buffer.from(text).toString('base64').split('').reverse().join('');
 }
 
-// Função para descriptografar (COMPATÍVEL com Render)
+// Função para descriptografar
 function simpleDecrypt(encrypted) {
   return Buffer.from(encrypted.split('').reverse().join(''), 'base64').toString('utf8');
 }
 
-// Função para buscar dados do JSONBin
-async function getData() {
-  try {
-    const response = await fetch(`https://api.jsonbin.io/v3/b/${BIN_ID}/latest`, {
-      headers: { "X-Master-Key": API_KEY }
-    });
-    
-    if (!response.ok) {
-      throw new Error(`Erro ao buscar dados: ${response.status} ${response.statusText}`);
-    }
-    
-    const data = await response.json();
-    return data.record || { products: [], categories: [], admin_credentials: null };
-  } catch (error) {
-    console.error("Erro ao buscar dados:", error);
-    return { products: [], categories: [], admin_credentials: null };
-  }
-}
-
-// Função para salvar dados no JSONBin
-async function saveData(data) {
-  try {
-    const response = await fetch(`https://api.jsonbin.io/v3/b/${BIN_ID}`, {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Master-Key": API_KEY,
-        "X-Bin-Versioning": "false"
-      },
-      body: JSON.stringify(data)
-    });
-    
-    if (!response.ok) {
-      throw new Error(`Erro ao salvar dados: ${response.status} ${response.statusText}`);
-    }
-    
-    const result = await response.json();
-    return result;
-  } catch (error) {
-    console.error("Erro ao salvar dados:", error);
-    throw error;
-  }
-}
-
-// Normalizar categorias - garantir que sejam objetos
+// Normalizar categorias
 function normalizeCategories(categories) {
   if (!Array.isArray(categories)) return [];
   
@@ -89,23 +50,39 @@ function normalizeCategories(categories) {
   }).filter(cat => cat !== null);
 }
 
-// Configurar credenciais iniciais se não existirem
-async function setupInitialCredentials() {
-  const data = await getData();
+// Normalizar produtos
+function normalizeProducts(products) {
+  if (!Array.isArray(products)) return [];
   
-  if (!data.admin_credentials) {
-    // Credenciais padrão (usuário: admin, senha: admin123)
-    data.admin_credentials = {
-      username: simpleEncrypt('admin'),
-      password: simpleEncrypt('admin123')
-    };
+  return products.map(product => {
+    // Se o produto ainda usa a estrutura antiga (sizes diretamente)
+    if (product.sizes && !product.colors) {
+      return {
+        ...product,
+        colors: [
+          {
+            name: product.color || 'Padrão',
+            image: product.image || 'https://via.placeholder.com/400x300',
+            sizes: product.sizes
+          }
+        ]
+      };
+    }
     
-    await saveData(data);
+    // Se já tem a estrutura nova, garantir que está correta
+    if (product.colors && Array.isArray(product.colors)) {
+      return {
+        ...product,
+        colors: product.colors.map(color => ({
+          name: color.name || 'Sem nome',
+          image: color.image || 'https://via.placeholder.com/400x300',
+          sizes: color.sizes || []
+        }))
+      };
+    }
     
-    console.log('Credenciais padrão criadas:');
-    console.log('Usuário: admin');
-    console.log('Senha: admin123');
-  }
+    return product;
+  });
 }
 
 // Verificar autenticação
@@ -113,79 +90,146 @@ function checkAuth(token) {
   return token === "authenticated_admin_token";
 }
 
-// Endpoints que seu frontend está tentando acessar
-app.post("/save-data", async (req, res) => {
+// Migrar dados do JSON para o Supabase
+async function migrateDataToSupabase() {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !checkAuth(authHeader.replace("Bearer ", ""))) {
-      return res.status(401).json({ error: "Não autorizado" });
-    }
+    console.log('Iniciando migração de dados para o Supabase...');
     
-    const dataToSave = req.body;
+    // Dados padrão para migração inicial
+    const defaultProducts = [
+      {
+        id: 1,
+        title: "Camiseta Básica Algodão",
+        category: "camisa",
+        price: 59.9,
+        description: "Camiseta 100% algodão, caimento regular. Conforto para o dia a dia.",
+        colors: [
+          {
+            name: "Branco",
+            image: "https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?ixlib=rb-4.0.3&ixid=MnwxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8&auto=format&fit=crop&w=800&q=80",
+            sizes: [
+              { name: "P", stock: 5 },
+              { name: "M", stock: 8 },
+              { name: "G", stock: 3 },
+              { name: "GG", stock: 2 }
+            ]
+          }
+        ],
+        status: "active"
+      }
+    ];
     
-    // Normalizar categorias antes de salvar
-    if (dataToSave.categories) {
-      dataToSave.categories = normalizeCategories(dataToSave.categories);
-    }
-    
-    const result = await saveData(dataToSave);
-    res.json({ success: true, result });
-  } catch (error) {
-    console.error("Erro ao salvar dados:", error);
-    res.status(500).json({ 
-      success: false, 
-      error: "Erro ao salvar dados",
-      message: error.message 
-    });
-  }
-});
+    const defaultCategories = [
+      {
+        id: 'camisa',
+        name: 'Camisas',
+        description: 'Camisas de diversos modelos e estilos'
+      },
+      {
+        id: 'short',
+        name: 'Shorts',
+        description: 'Shorts para o dia a dia e prática esportiva'
+      }
+    ];
 
-app.get("/load-data", async (req, res) => {
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !checkAuth(authHeader.replace("Bearer ", ""))) {
-      return res.status(401).json({ error: "Não autorizado" });
-    }
-    
-    const data = await getData();
-    
-    // Normalizar categorias antes de retornar
-    if (data.categories) {
-      data.categories = normalizeCategories(data.categories);
-    }
-    
-    res.json(data);
-  } catch (error) {
-    console.error("Erro ao carregar dados:", error);
-    res.status(500).json({ 
-      error: "Erro ao carregar dados",
-      message: error.message 
-    });
-  }
-});
+    // Verificar se já existem produtos
+    const { data: existingProducts, error: productsError } = await supabase
+      .from('products')
+      .select('id')
+      .limit(1);
 
-// Seus endpoints existentes (mantidos para compatibilidade)
+    if (productsError) throw productsError;
+
+    // Se não existem produtos, inserir os padrões
+    if (!existingProducts || existingProducts.length === 0) {
+      console.log('Inserindo produtos padrão...');
+      
+      for (const product of defaultProducts) {
+        const { error } = await supabase
+          .from('products')
+          .insert([{
+            id: product.id,
+            title: product.title,
+            category: product.category,
+            price: product.price,
+            description: product.description,
+            status: product.status,
+            colors: product.colors
+          }]);
+
+        if (error) throw error;
+      }
+
+      console.log('Produtos inseridos com sucesso!');
+    }
+
+    // Verificar se já existem categorias
+    const { data: existingCategories, error: categoriesError } = await supabase
+      .from('categories')
+      .select('id')
+      .limit(1);
+
+    if (categoriesError) throw categoriesError;
+
+    // Se não existem categorias, inserir as padrões
+    if (!existingCategories || existingCategories.length === 0) {
+      console.log('Inserindo categorias padrão...');
+      
+      for (const category of defaultCategories) {
+        const { error } = await supabase
+          .from('categories')
+          .insert([{
+            id: category.id,
+            name: category.name,
+            description: category.description
+          }]);
+
+        if (error) throw error;
+      }
+
+      console.log('Categorias inseridas com sucesso!');
+    }
+
+    console.log('Migração concluída com sucesso!');
+  } catch (error) {
+    console.error('Erro durante a migração:', error);
+  }
+}
+
+// Endpoints da API
+
+// Buscar produtos
 app.get("/api/products", async (req, res) => {
   try {
-    const data = await getData();
-    res.json({ products: data.products || [] });
+    const { data: products, error } = await supabase
+      .from('products')
+      .select('*')
+      .order('id');
+
+    if (error) throw error;
+
+    const normalizedProducts = normalizeProducts(products || []);
+    res.json({ products: normalizedProducts });
   } catch (error) {
     console.error("Erro ao buscar produtos:", error);
     res.status(500).json({ error: "Erro ao buscar produtos" });
   }
 });
 
+// Buscar categorias
 app.get("/api/categories", async (req, res) => {
   try {
-    const data = await getData();
+    const { data: categories, error } = await supabase
+      .from('categories')
+      .select('*')
+      .order('id');
+
+    if (error) throw error;
+
+    let normalizedCategories = normalizeCategories(categories || []);
     
-    // Normalizar categorias antes de retornar
-    let categories = data.categories || [];
-    categories = normalizeCategories(categories);
-    
-    // Se não há categorias, retornar as padrão
-    if (categories.length === 0) {
-      categories = [
+    if (normalizedCategories.length === 0) {
+      normalizedCategories = [
         {
           id: 'camisa',
           name: 'Camisas',
@@ -199,13 +243,14 @@ app.get("/api/categories", async (req, res) => {
       ];
     }
     
-    res.json({ categories });
+    res.json({ categories: normalizedCategories });
   } catch (error) {
     console.error("Erro ao buscar categorias:", error);
     res.status(500).json({ error: "Erro ao buscar categorias" });
   }
 });
 
+// Salvar produtos
 app.post("/api/products", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -214,10 +259,33 @@ app.post("/api/products", async (req, res) => {
     }
     
     const { products } = req.body;
-    const data = await getData();
-    data.products = products;
-    data.lastUpdated = new Date().toISOString();
-    await saveData(data);
+    const normalizedProducts = normalizeProducts(products);
+
+    // Deletar todos os produtos existentes
+    const { error: deleteError } = await supabase
+      .from('products')
+      .delete()
+      .neq('id', 0); // Delete all records
+
+    if (deleteError) throw deleteError;
+
+    // Inserir os novos produtos
+    for (const product of normalizedProducts) {
+      const { error: insertError } = await supabase
+        .from('products')
+        .insert([{
+          id: product.id,
+          title: product.title,
+          category: product.category,
+          price: product.price,
+          description: product.description,
+          status: product.status,
+          colors: product.colors
+        }]);
+
+      if (insertError) throw insertError;
+    }
+
     res.json({ success: true });
   } catch (error) {
     console.error("Erro ao salvar produtos:", error);
@@ -225,6 +293,7 @@ app.post("/api/products", async (req, res) => {
   }
 });
 
+// Salvar categorias
 app.post("/api/categories", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -233,13 +302,29 @@ app.post("/api/categories", async (req, res) => {
     }
     
     const { categories } = req.body;
-    const data = await getData();
-    
-    // Normalizar categorias antes de salvar
-    data.categories = normalizeCategories(categories);
-    data.lastUpdated = new Date().toISOString();
-    
-    await saveData(data);
+    const normalizedCategories = normalizeCategories(categories);
+
+    // Deletar todas as categorias existentes
+    const { error: deleteError } = await supabase
+      .from('categories')
+      .delete()
+      .neq('id', ''); // Delete all records
+
+    if (deleteError) throw deleteError;
+
+    // Inserir as novas categorias
+    for (const category of normalizedCategories) {
+      const { error: insertError } = await supabase
+        .from('categories')
+        .insert([{
+          id: category.id,
+          name: category.name,
+          description: category.description
+        }]);
+
+      if (insertError) throw insertError;
+    }
+
     res.json({ success: true });
   } catch (error) {
     console.error("Erro ao salvar categorias:", error);
@@ -247,21 +332,23 @@ app.post("/api/categories", async (req, res) => {
   }
 });
 
-// Endpoint de autenticação (agora seguro)
+// Autenticação
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { username, password } = req.body;
     
-    const data = await getData();
-    
-    if (!data.admin_credentials) {
-      await setupInitialCredentials();
-      return res.status(401).json({ error: "Credenciais não configuradas. Recarregue a página." });
+    const { data: credentials, error } = await supabase
+      .from('admin_credentials')
+      .select('*')
+      .eq('username', username)
+      .single();
+
+    if (error || !credentials) {
+      return res.status(401).json({ error: "Credenciais inválidas" });
     }
-    
-    // Verificar credenciais
-    if (simpleEncrypt(username) === data.admin_credentials.username && 
-        simpleEncrypt(password) === data.admin_credentials.password) {
+
+    // Verificar credenciais (simplificado - em produção usar hash)
+    if (password === credentials.password) {
       res.json({ 
         success: true, 
         token: "authenticated_admin_token", 
@@ -276,35 +363,7 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-// Endpoint para alterar senha
-app.post("/api/auth/change-password", async (req, res) => {
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !checkAuth(authHeader.replace("Bearer ", ""))) {
-      return res.status(401).json({ error: "Não autorizado" });
-    }
-    
-    const { currentPassword, newPassword } = req.body;
-    
-    const data = await getData();
-    
-    // Verificar senha atual
-    if (simpleEncrypt(currentPassword) !== data.admin_credentials.password) {
-      return res.status(401).json({ error: "Senha atual incorreta" });
-    }
-    
-    // Atualizar senha
-    data.admin_credentials.password = simpleEncrypt(newPassword);
-    await saveData(data);
-    
-    res.json({ success: true, message: "Senha alterada com sucesso" });
-  } catch (error) {
-    console.error("Erro ao alterar senha:", error);
-    res.status(500).json({ error: "Erro ao alterar senha" });
-  }
-});
-
-// Endpoint para verificar autenticação
+// Verificar autenticação
 app.get("/api/auth/verify", async (req, res) => {
   try {
     const token = req.headers.authorization?.replace("Bearer ", "");
@@ -320,14 +379,13 @@ app.get("/api/auth/verify", async (req, res) => {
   }
 });
 
-// Endpoint padrão para health check
+// Health check
 app.get("/", (req, res) => {
   res.json({ 
-    message: "Backend Urban Z está funcionando!", 
+    message: "Backend Urban Z com Supabase está funcionando!", 
     status: "OK",
+    database: "Supabase",
     endpoints: {
-      saveData: "POST /save-data",
-      loadData: "GET /load-data",
       products: "GET /api/products",
       categories: "GET /api/categories",
       login: "POST /api/auth/login"
@@ -335,8 +393,21 @@ app.get("/", (req, res) => {
   });
 });
 
-// Inicializar credenciais
-setupInitialCredentials().then(() => {
-  const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => console.log(`Servidor rodando em http://localhost:${PORT}`));
+// Endpoint para migração manual
+app.post("/api/migrate", async (req, res) => {
+  try {
+    await migrateDataToSupabase();
+    res.json({ success: true, message: "Migração concluída com sucesso!" });
+  } catch (error) {
+    console.error("Erro na migração:", error);
+    res.status(500).json({ error: "Erro durante a migração" });
+  }
+});
+
+// Inicializar servidor e migração
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, async () => {
+  console.log(`Servidor rodando em http://localhost:${PORT}`);
+  console.log('Iniciando migração de dados...');
+  await migrateDataToSupabase();
 });
