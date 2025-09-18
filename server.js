@@ -97,9 +97,9 @@ function normalizeProducts(products) {
   if (!Array.isArray(products)) return [];
   
   return products.map(product => {
-    // Garantir que o produto tenha um ID
+    // Garantir que o produto tenha ID
     if (!product.id) {
-      product.id = Date.now() + Math.random();
+      product.id = Date.now() + Math.floor(Math.random() * 1000);
     }
     
     // Se o produto ainda usa a estrutura antiga (sizes diretamente)
@@ -110,7 +110,12 @@ function normalizeProducts(products) {
           {
             name: product.color || 'Padrão',
             image: product.image || 'https://via.placeholder.com/400x300',
-            sizes: Array.isArray(product.sizes) ? product.sizes : []
+            sizes: product.sizes || [
+              { name: "P", stock: 0 },
+              { name: "M", stock: 0 },
+              { name: "G", stock: 0 },
+              { name: "GG", stock: 0 }
+            ]
           }
         ]
       };
@@ -123,31 +128,32 @@ function normalizeProducts(products) {
         colors: product.colors.map(color => ({
           name: color.name || 'Sem nome',
           image: color.image || 'https://via.placeholder.com/400x300',
-          sizes: Array.isArray(color.sizes) ? color.sizes : []
+          sizes: color.sizes || [
+            { name: "P", stock: 0 },
+            { name: "M", stock: 0 },
+            { name: "G", stock: 0 },
+            { name: "GG", stock: 0 }
+          ]
         }))
       };
     }
     
-    // Se não tem cores nem sizes, criar estrutura padrão
-    if (!product.colors && !product.sizes) {
-      return {
-        ...product,
-        colors: [
-          {
-            name: 'Padrão',
-            image: product.image || 'https://via.placeholder.com/400x300',
-            sizes: [
-              { name: 'P', stock: 0 },
-              { name: 'M', stock: 0 },
-              { name: 'G', stock: 0 },
-              { name: 'GG', stock: 0 }
-            ]
-          }
-        ]
-      };
-    }
-    
-    return product;
+    // Se não tem cores, criar estrutura padrão
+    return {
+      ...product,
+      colors: [
+        {
+          name: 'Padrão',
+          image: product.image || 'https://via.placeholder.com/400x300',
+          sizes: [
+            { name: "P", stock: 0 },
+            { name: "M", stock: 0 },
+            { name: "G", stock: 0 },
+            { name: "GG", stock: 0 }
+          ]
+        }
+      ]
+    };
   });
 }
 
@@ -193,9 +199,6 @@ app.post("/save-data", async (req, res) => {
     if (dataToSave.products) {
       dataToSave.products = normalizeProducts(dataToSave.products);
     }
-    
-    // Adicionar timestamp
-    dataToSave.lastUpdated = new Date().toISOString();
     
     const result = await saveData(dataToSave);
     res.json({ success: true, result });
@@ -292,11 +295,6 @@ app.post("/api/products", async (req, res) => {
     }
     
     const { products } = req.body;
-    
-    if (!Array.isArray(products)) {
-      return res.status(400).json({ error: "Produtos devem ser um array" });
-    }
-    
     const data = await getData();
     
     // Normalizar produtos antes de salvar
@@ -307,10 +305,7 @@ app.post("/api/products", async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error("Erro ao salvar produtos:", error);
-    res.status(500).json({ 
-      error: "Erro ao salvar produtos",
-      message: error.message 
-    });
+    res.status(500).json({ error: "Erro ao salvar produtos" });
   }
 });
 
@@ -322,11 +317,6 @@ app.post("/api/categories", async (req, res) => {
     }
     
     const { categories } = req.body;
-    
-    if (!Array.isArray(categories)) {
-      return res.status(400).json({ error: "Categorias devem ser um array" });
-    }
-    
     const data = await getData();
     
     // Normalizar categorias antes de salvar
@@ -337,10 +327,7 @@ app.post("/api/categories", async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error("Erro ao salvar categorias:", error);
-    res.status(500).json({ 
-      error: "Erro ao salvar categorias",
-      message: error.message 
-    });
+    res.status(500).json({ error: "Erro ao salvar categorias" });
   }
 });
 
@@ -348,10 +335,6 @@ app.post("/api/categories", async (req, res) => {
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { username, password } = req.body;
-    
-    if (!username || !password) {
-      return res.status(400).json({ error: "Username e password são obrigatórios" });
-    }
     
     const data = await getData();
     
@@ -386,10 +369,6 @@ app.post("/api/auth/change-password", async (req, res) => {
     }
     
     const { currentPassword, newPassword } = req.body;
-    
-    if (!currentPassword || !newPassword) {
-      return res.status(400).json({ error: "Senha atual e nova senha são obrigatórias" });
-    }
     
     const data = await getData();
     
@@ -430,7 +409,6 @@ app.get("/", (req, res) => {
   res.json({ 
     message: "Backend Urban Z está funcionando!", 
     status: "OK",
-    timestamp: new Date().toISOString(),
     endpoints: {
       saveData: "POST /save-data",
       loadData: "GET /load-data",
@@ -441,29 +419,8 @@ app.get("/", (req, res) => {
   });
 });
 
-// Middleware de tratamento de erros
-app.use((error, req, res, next) => {
-  console.error('Erro não tratado:', error);
-  res.status(500).json({ 
-    error: 'Erro interno do servidor',
-    message: error.message 
-  });
-});
-
 // Inicializar credenciais
 setupInitialCredentials().then(() => {
   const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => {
-    console.log(`Servidor rodando em http://localhost:${PORT}`);
-    console.log('Endpoints disponíveis:');
-    console.log('- GET / (health check)');
-    console.log('- POST /api/auth/login');
-    console.log('- GET /api/products');
-    console.log('- GET /api/categories');
-    console.log('- POST /api/products (auth required)');
-    console.log('- POST /api/categories (auth required)');
-  });
-}).catch(error => {
-  console.error('Erro ao inicializar servidor:', error);
-  process.exit(1);
+  app.listen(PORT, () => console.log(`Servidor rodando em http://localhost:${PORT}`));
 });
