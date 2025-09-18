@@ -97,11 +97,6 @@ function normalizeProducts(products) {
   if (!Array.isArray(products)) return [];
   
   return products.map(product => {
-    // Garantir que o produto tenha ID
-    if (!product.id) {
-      product.id = Date.now() + Math.floor(Math.random() * 1000);
-    }
-    
     // Se o produto ainda usa a estrutura antiga (sizes diretamente)
     if (product.sizes && !product.colors) {
       return {
@@ -110,12 +105,7 @@ function normalizeProducts(products) {
           {
             name: product.color || 'Padrão',
             image: product.image || 'https://via.placeholder.com/400x300',
-            sizes: product.sizes || [
-              { name: "P", stock: 0 },
-              { name: "M", stock: 0 },
-              { name: "G", stock: 0 },
-              { name: "GG", stock: 0 }
-            ]
+            sizes: product.sizes
           }
         ]
       };
@@ -128,32 +118,12 @@ function normalizeProducts(products) {
         colors: product.colors.map(color => ({
           name: color.name || 'Sem nome',
           image: color.image || 'https://via.placeholder.com/400x300',
-          sizes: color.sizes || [
-            { name: "P", stock: 0 },
-            { name: "M", stock: 0 },
-            { name: "G", stock: 0 },
-            { name: "GG", stock: 0 }
-          ]
+          sizes: color.sizes || []
         }))
       };
     }
     
-    // Se não tem cores, criar estrutura padrão
-    return {
-      ...product,
-      colors: [
-        {
-          name: 'Padrão',
-          image: product.image || 'https://via.placeholder.com/400x300',
-          sizes: [
-            { name: "P", stock: 0 },
-            { name: "M", stock: 0 },
-            { name: "G", stock: 0 },
-            { name: "GG", stock: 0 }
-          ]
-        }
-      ]
-    };
+    return product;
   });
 }
 
