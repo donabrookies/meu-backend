@@ -9,27 +9,27 @@ const app = express();
 
 // Configurações aprimoradas
 app.use(cors({
-  origin: '*', // Em produção, especificar domínios
+  origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Master-Key']
 }));
 
-// Aumentar limites para uploads
+// Aumentar limites significativamente
 app.use(express.json({ 
-  limit: '25mb',  // Reduzido de 50mb para 25mb
-  parameterLimit: 50000,
+  limit: '100mb',  // Aumentado para 100MB
+  parameterLimit: 100000,
   extended: true
 }));
 app.use(express.urlencoded({ 
-  limit: '25mb', 
+  limit: '100mb', 
   extended: true, 
-  parameterLimit: 50000 
+  parameterLimit: 100000 
 }));
 
-// Timeout para requisições
+// Timeout estendido para requisições
 app.use((req, res, next) => {
-  req.setTimeout(60000); // 60 segundos
-  res.setTimeout(60000);
+  req.setTimeout(180000); // 3 minutos
+  res.setTimeout(180000);
   next();
 });
 
@@ -63,12 +63,12 @@ function simpleDecrypt(encrypted) {
   }
 }
 
-// Cache simples para reduzir requisições
+// Cache com TTL mais longo para reduzir requisições
 let dataCache = null;
 let cacheTimestamp = 0;
-const CACHE_DURATION = 30000; // 30 segundos
+const CACHE_DURATION = 60000; // 60 segundos
 
-// Função para buscar dados do JSONBin com retry e cache
+// Função para buscar dados do JSONBin com retry melhorado
 async function getData(useCache = true) {
   // Usar cache se disponível e não expirado
   if (useCache && dataCache && (Date.now() - cacheTimestamp) < CACHE_DURATION) {
@@ -76,7 +76,7 @@ async function getData(useCache = true) {
     return dataCache;
   }
 
-  const maxRetries = 3;
+  const maxRetries = 5; // Aumentado para 5 tentativas
   let lastError = null;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -88,7 +88,7 @@ async function getData(useCache = true) {
           "X-Master-Key": API_KEY,
           "Content-Type": "application/json"
         },
-        timeout: 15000 // 15 segundos timeout
+        timeout: 30000 // 30 segundos timeout
       });
       
       if (!response.ok) {
@@ -109,7 +109,8 @@ async function getData(useCache = true) {
       console.log('✅ Dados carregados:', { 
         products: result.products.length, 
         categories: result.categories.length,
-        hasCredentials: !!result.admin_credentials
+        hasCredentials: !!result.admin_credentials,
+        size: JSON.stringify(result).length + ' bytes'
       });
       
       return result;
@@ -119,7 +120,7 @@ async function getData(useCache = true) {
       lastError = error;
       
       if (attempt < maxRetries) {
-        const delay = attempt * 2000; // 2s, 4s, 6s
+        const delay = Math.min(attempt * 3000, 15000); // Max 15s delay
         console.log(`⏳ Aguardando ${delay}ms antes da próxima tentativa...`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
@@ -141,9 +142,9 @@ async function getData(useCache = true) {
   return defaultData;
 }
 
-// Função para salvar dados no JSONBin com retry
+// Função para salvar dados no JSONBin com retry melhorado
 async function saveData(data) {
-  const maxRetries = 3;
+  const maxRetries = 5; // Aumentado para 5 tentativas
   let lastError = null;
 
   // Validar dados antes de salvar
@@ -160,13 +161,21 @@ async function saveData(data) {
     version: "2.0"
   };
 
+  // Verificar tamanho dos dados
+  const dataSize = JSON.stringify(normalizedData).length;
+  console.log(`📊 Preparando para salvar: ${dataSize} bytes`);
+
+  if (dataSize > 50 * 1024 * 1024) { // 50MB limite
+    throw new Error('Dados muito grandes (>50MB). Reduza o número de produtos ou tamanho das imagens.');
+  }
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       console.log(`💾 Salvando dados (tentativa ${attempt}/${maxRetries})...`);
       console.log('📊 Dados a salvar:', {
         products: normalizedData.products.length,
         categories: normalizedData.categories.length,
-        size: JSON.stringify(normalizedData).length + ' bytes'
+        size: dataSize + ' bytes'
       });
       
       const response = await fetch(`https://api.jsonbin.io/v3/b/${BIN_ID}`, {
@@ -198,7 +207,7 @@ async function saveData(data) {
       lastError = error;
       
       if (attempt < maxRetries) {
-        const delay = attempt * 1000; // 1s, 2s, 3s
+        const delay = Math.min(attempt * 2000, 10000); // Max 10s delay
         console.log(`⏳ Aguardando ${delay}ms antes da próxima tentativa...`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
@@ -375,37 +384,69 @@ function checkAuth(token) {
   return token === "authenticated_admin_token";
 }
 
-// Middleware de validação
+// Middleware de validação melhorado
 function validateProductData(products) {
   if (!Array.isArray(products)) {
     throw new Error('Products deve ser um array');
   }
   
-  for (const product of products) {
-    if (!product.title || !product.category || !product.price) {
-      throw new Error('Produto deve ter título, categoria e preço');
+  if (products.length === 0) {
+    throw new Error('Array de produtos não pode estar vazio');
+  }
+  
+  for (let i = 0; i < products.length; i++) {
+    const product = products[i];
+    
+    if (!product || typeof product !== 'object') {
+      throw new Error(`Produto ${i + 1} é inválido`);
+    }
+    
+    if (!product.title || typeof product.title !== 'string' || product.title.trim().length === 0) {
+      throw new Error(`Produto ${i + 1} deve ter um título válido`);
+    }
+    
+    if (!product.category || typeof product.category !== 'string') {
+      throw new Error(`Produto ${i + 1} deve ter uma categoria válida`);
+    }
+    
+    if (!product.price || isNaN(parseFloat(product.price)) || parseFloat(product.price) <= 0) {
+      throw new Error(`Produto ${i + 1} deve ter um preço válido`);
     }
     
     if (!Array.isArray(product.colors) || product.colors.length === 0) {
-      throw new Error('Produto deve ter pelo menos uma cor');
+      throw new Error(`Produto ${i + 1} deve ter pelo menos uma cor`);
     }
     
-    for (const color of product.colors) {
-      if (!color.name || !color.image) {
-        throw new Error('Cor deve ter nome e imagem');
+    for (let j = 0; j < product.colors.length; j++) {
+      const color = product.colors[j];
+      
+      if (!color.name || typeof color.name !== 'string') {
+        throw new Error(`Cor ${j + 1} do produto ${i + 1} deve ter um nome válido`);
+      }
+      
+      if (!color.image || typeof color.image !== 'string') {
+        throw new Error(`Cor ${j + 1} do produto ${i + 1} deve ter uma imagem válida`);
+      }
+      
+      // Verificar se a imagem base64 não é muito grande
+      if (color.image.startsWith('data:') && color.image.length > 500 * 1024) { // 500KB
+        console.warn(`⚠️ Imagem da cor ${color.name} do produto ${product.title} é muito grande (${Math.round(color.image.length/1024)}KB)`);
       }
     }
   }
 }
 
-// Middleware de log de requisições
+// Middleware de log de requisições melhorado
 app.use((req, res, next) => {
   const start = Date.now();
-  console.log(`📥 ${req.method} ${req.path} - ${new Date().toISOString()}`);
+  const contentLength = req.get('content-length') || 0;
+  console.log(`📥 ${req.method} ${req.path} - ${new Date().toISOString()} - ${contentLength} bytes`);
   
   res.on('finish', () => {
     const duration = Date.now() - start;
-    console.log(`📤 ${req.method} ${req.path} - ${res.statusCode} - ${duration}ms`);
+    const status = res.statusCode;
+    const statusIcon = status < 400 ? '✅' : status < 500 ? '⚠️' : '❌';
+    console.log(`📤 ${statusIcon} ${req.method} ${req.path} - ${status} - ${duration}ms`);
   });
   
   next();
@@ -415,11 +456,20 @@ app.use((req, res, next) => {
 
 // Endpoint de health check aprimorado
 app.get("/", (req, res) => {
+  const memUsage = process.memoryUsage();
   res.json({ 
     message: "🚀 Backend Urban Z está funcionando!", 
     status: "OK",
     timestamp: new Date().toISOString(),
-    version: "2.0",
+    version: "2.1",
+    memory: {
+      used: Math.round(memUsage.heapUsed / 1024 / 1024) + 'MB',
+      total: Math.round(memUsage.heapTotal / 1024 / 1024) + 'MB'
+    },
+    cache: {
+      active: !!dataCache,
+      age: dataCache ? Math.round((Date.now() - cacheTimestamp) / 1000) + 's' : 'N/A'
+    },
     endpoints: {
       health: "GET /",
       products: "GET /api/products",
@@ -431,13 +481,25 @@ app.get("/", (req, res) => {
   });
 });
 
-// Endpoint para produtos
+// Endpoint para produtos com paginação
 app.get("/api/products", async (req, res) => {
   try {
+    const { page = 1, limit = 1000 } = req.query;
     const data = await getData();
+    
+    const products = data.products || [];
+    const startIndex = (page - 1) * limit;
+    const endIndex = startIndex + parseInt(limit);
+    const paginatedProducts = products.slice(startIndex, endIndex);
+    
     res.json({ 
-      products: data.products || [],
-      total: (data.products || []).length,
+      products: paginatedProducts,
+      pagination: {
+        current: parseInt(page),
+        limit: parseInt(limit),
+        total: products.length,
+        pages: Math.ceil(products.length / limit)
+      },
       timestamp: new Date().toISOString()
     });
   } catch (error) {
@@ -473,7 +535,7 @@ app.get("/api/categories", async (req, res) => {
   }
 });
 
-// Salvar produtos com validação aprimorada
+// Salvar produtos com validação e processamento por lotes
 app.post("/api/products", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -486,6 +548,8 @@ app.post("/api/products", async (req, res) => {
     if (!products) {
       return res.status(400).json({ error: "Produtos são obrigatórios" });
     }
+    
+    console.log(`📊 Recebendo ${products.length} produtos para salvar...`);
     
     // Validar dados
     validateProductData(products);
@@ -502,12 +566,25 @@ app.post("/api/products", async (req, res) => {
       return res.status(400).json({ error: "Produtos com IDs duplicados encontrados" });
     }
     
+    // Verificar tamanho total dos dados
+    const dataSize = JSON.stringify(data).length;
+    console.log(`📏 Tamanho total dos dados: ${Math.round(dataSize / 1024)}KB`);
+    
+    if (dataSize > 45 * 1024 * 1024) { // 45MB limite de segurança
+      return res.status(413).json({ 
+        error: "Dados muito grandes", 
+        message: "Dados excedem 45MB. Reduza o número de produtos ou tamanho das imagens.",
+        size: Math.round(dataSize / 1024 / 1024) + 'MB'
+      });
+    }
+    
     await saveData(data);
     
     res.json({ 
       success: true, 
       saved: data.products.length,
-      message: "Produtos salvos com sucesso" 
+      message: "Produtos salvos com sucesso",
+      size: Math.round(dataSize / 1024) + 'KB'
     });
     
   } catch (error) {
@@ -516,18 +593,25 @@ app.post("/api/products", async (req, res) => {
     let statusCode = 500;
     let message = error.message;
     
-    if (error.message.includes('413') || error.message.includes('too large')) {
+    if (error.message.includes('413') || error.message.includes('too large') || error.message.includes('muito grandes')) {
       statusCode = 413;
-      message = "Dados muito grandes. Reduza o tamanho das imagens.";
-    } else if (error.message.includes('timeout')) {
+      message = "Dados muito grandes. Reduza o tamanho das imagens ou número de produtos.";
+    } else if (error.name === 'TimeoutError' || error.message.includes('timeout')) {
       statusCode = 408;
-      message = "Timeout na operação. Tente novamente.";
+      message = "Timeout na operação. Tente novamente ou reduza a quantidade de dados.";
+    } else if (error.message.includes('502') || error.message.includes('503')) {
+      statusCode = 503;
+      message = "Servidor temporariamente indisponível. Tente novamente em alguns minutos.";
+    } else if (error.message.includes('deve ter') || error.message.includes('inválido')) {
+      statusCode = 400;
+      message = error.message;
     }
     
     res.status(statusCode).json({ 
       success: false, 
       error: "Erro ao salvar produtos",
-      message: message
+      message: message,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
@@ -668,6 +752,26 @@ app.post("/api/auth/change-password", async (req, res) => {
   }
 });
 
+// Endpoint para limpar cache (apenas para debug)
+app.post("/api/cache/clear", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !checkAuth(authHeader.replace("Bearer ", ""))) {
+      return res.status(401).json({ error: "Não autorizado" });
+    }
+    
+    dataCache = null;
+    cacheTimestamp = 0;
+    
+    console.log('🗑️ Cache limpo');
+    res.json({ success: true, message: "Cache limpo com sucesso" });
+    
+  } catch (error) {
+    console.error("❌ Erro ao limpar cache:", error);
+    res.status(500).json({ error: "Erro ao limpar cache" });
+  }
+});
+
 // Middleware para lidar com rotas não encontradas
 app.use((req, res) => {
   res.status(404).json({
@@ -689,9 +793,21 @@ app.use((req, res) => {
 app.use((err, req, res, next) => {
   console.error('💥 Erro não capturado:', err);
   
-  res.status(500).json({
-    error: "Erro interno do servidor",
-    message: process.env.NODE_ENV === 'development' ? err.message : "Algo deu errado",
+  let statusCode = 500;
+  let message = "Erro interno do servidor";
+  
+  // Tratar erros específicos
+  if (err.type === 'entity.too.large') {
+    statusCode = 413;
+    message = "Dados muito grandes. Reduza o tamanho das imagens.";
+  } else if (err.name === 'TimeoutError') {
+    statusCode = 408;
+    message = "Timeout na requisição.";
+  }
+  
+  res.status(statusCode).json({
+    error: message,
+    message: process.env.NODE_ENV === 'development' ? err.message : message,
     timestamp: new Date().toISOString()
   });
 });
@@ -717,6 +833,10 @@ async function startServer() {
     
     await setupInitialCredentials();
     
+    // Pré-carregar cache
+    console.log('📋 Pré-carregando cache...');
+    await getData(false);
+    
     app.listen(PORT, () => {
       console.log(`✅ Servidor rodando em http://localhost:${PORT}`);
       console.log('📡 Endpoints disponíveis:');
@@ -725,6 +845,7 @@ async function startServer() {
       console.log(`   GET  http://localhost:${PORT}/api/categories`);
       console.log(`   POST http://localhost:${PORT}/api/auth/login`);
       console.log('🎯 Servidor pronto para receber requisições!');
+      console.log('💾 Limites: 100MB request, 180s timeout');
     });
     
   } catch (error) {
