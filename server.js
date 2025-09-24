@@ -264,7 +264,113 @@ app.post("/api/products", async (req, res) => {
   }
 });
 
-// Salvar categorias
+// NOVO: Adicionar categoria individual
+app.post("/api/categories/add", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !checkAuth(authHeader.replace("Bearer ", ""))) {
+      return res.status(401).json({ error: "Não autorizado" });
+    }
+    
+    const { category } = req.body;
+    
+    if (!category || !category.id || !category.name) {
+      return res.status(400).json({ error: "Dados da categoria inválidos" });
+    }
+
+    // Verificar se já existe
+    const { data: existing } = await supabase
+      .from('categories')
+      .select('id')
+      .eq('id', category.id)
+      .single();
+
+    if (existing) {
+      return res.status(400).json({ error: "Categoria já existe" });
+    }
+
+    // Inserir nova categoria
+    const { error: insertError } = await supabase
+      .from('categories')
+      .insert([{
+        id: category.id,
+        name: category.name,
+        description: category.description || `Categoria de ${category.name}`
+      }]);
+
+    if (insertError) throw insertError;
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Erro ao adicionar categoria:", error);
+    res.status(500).json({ error: "Erro ao adicionar categoria" });
+  }
+});
+
+// NOVO: Excluir categoria individual
+app.delete("/api/categories/:categoryId", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !checkAuth(authHeader.replace("Bearer ", ""))) {
+      return res.status(401).json({ error: "Não autorizado" });
+    }
+    
+    const { categoryId } = req.params;
+    
+    // Verificar se a categoria existe
+    const { data: category, error: fetchError } = await supabase
+      .from('categories')
+      .select('*')
+      .eq('id', categoryId)
+      .single();
+
+    if (fetchError || !category) {
+      return res.status(404).json({ error: "Categoria não encontrada" });
+    }
+
+    // Verificar se há produtos usando esta categoria
+    const { data: productsInCategory, error: productsError } = await supabase
+      .from('products')
+      .select('id')
+      .eq('category', categoryId);
+
+    if (productsError) throw productsError;
+
+    // Se há produtos, mover para uma categoria padrão
+    if (productsInCategory && productsInCategory.length > 0) {
+      const { data: defaultCategory } = await supabase
+        .from('categories')
+        .select('id')
+        .neq('id', categoryId)
+        .limit(1)
+        .single();
+
+      if (defaultCategory) {
+        const { error: updateError } = await supabase
+          .from('products')
+          .update({ category: defaultCategory.id })
+          .eq('category', categoryId);
+
+        if (updateError) throw updateError;
+      }
+    }
+
+    // Deletar a categoria
+    const { error: deleteError } = await supabase
+      .from('categories')
+      .delete()
+      .eq('id', categoryId);
+
+    if (deleteError) throw deleteError;
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Erro ao excluir categoria:", error);
+    res.status(500).json({ error: "Erro ao excluir categoria" });
+  }
+});
+
+// Salvar categorias (mantido para compatibilidade)
 app.post("/api/categories", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -279,19 +385,21 @@ app.post("/api/categories", async (req, res) => {
     const { error: deleteError } = await supabase
       .from('categories')
       .delete()
-      .neq('id', '');
+      .gte('id', '');
 
-    if (deleteError) throw deleteError;
+    if (deleteError && !deleteError.message.includes('No rows found')) {
+      throw deleteError;
+    }
 
     // Inserir as novas categorias
     for (const category of normalizedCategories) {
       const { error: insertError } = await supabase
         .from('categories')
-        .insert([{
+        .upsert([{
           id: category.id,
           name: category.name,
           description: category.description
-        }]);
+        }], { onConflict: 'id' });
 
       if (insertError) throw insertError;
     }
