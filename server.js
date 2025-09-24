@@ -17,12 +17,12 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// Função para criptografar
+// Função para criptografar (COMPATÍVEL com o frontend)
 function simpleEncrypt(text) {
   return Buffer.from(text).toString('base64').split('').reverse().join('');
 }
 
-// Função para descriptografar
+// Função para descriptografar (COMPATÍVEL com o frontend)
 function simpleDecrypt(encrypted) {
   return Buffer.from(encrypted.split('').reverse().join(''), 'base64').toString('utf8');
 }
@@ -55,7 +55,6 @@ function normalizeProducts(products) {
   if (!Array.isArray(products)) return [];
   
   return products.map(product => {
-    // Se o produto ainda usa a estrutura antiga (sizes diretamente)
     if (product.sizes && !product.colors) {
       return {
         ...product,
@@ -69,7 +68,6 @@ function normalizeProducts(products) {
       };
     }
     
-    // Se já tem a estrutura nova, garantir que está correta
     if (product.colors && Array.isArray(product.colors)) {
       return {
         ...product,
@@ -90,104 +88,31 @@ function checkAuth(token) {
   return token === "authenticated_admin_token";
 }
 
-// Migrar dados do JSON para o Supabase
+// Migrar dados para o Supabase
 async function migrateDataToSupabase() {
   try {
     console.log('Iniciando migração de dados para o Supabase...');
     
-    // Dados padrão para migração inicial
-    const defaultProducts = [
-      {
-        id: 1,
-        title: "Camiseta Básica Algodão",
-        category: "camisa",
-        price: 59.9,
-        description: "Camiseta 100% algodão, caimento regular. Conforto para o dia a dia.",
-        colors: [
-          {
-            name: "Branco",
-            image: "https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?ixlib=rb-4.0.3&ixid=MnwxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8&auto=format&fit=crop&w=800&q=80",
-            sizes: [
-              { name: "P", stock: 5 },
-              { name: "M", stock: 8 },
-              { name: "G", stock: 3 },
-              { name: "GG", stock: 2 }
-            ]
-          }
-        ],
-        status: "active"
-      }
-    ];
+    // Configurar credenciais admin com criptografia
+    const adminPassword = 'admin123';
+    const encryptedPassword = simpleEncrypt(adminPassword);
     
-    const defaultCategories = [
-      {
-        id: 'camisa',
-        name: 'Camisas',
-        description: 'Camisas de diversos modelos e estilos'
-      },
-      {
-        id: 'short',
-        name: 'Shorts',
-        description: 'Shorts para o dia a dia e prática esportiva'
-      }
-    ];
-
-    // Verificar se já existem produtos
-    const { data: existingProducts, error: productsError } = await supabase
-      .from('products')
+    const { data: existingCreds, error: credsError } = await supabase
+      .from('admin_credentials')
       .select('id')
       .limit(1);
 
-    if (productsError) throw productsError;
+    if (!existingCreds || existingCreds.length === 0) {
+      const { error } = await supabase
+        .from('admin_credentials')
+        .insert([{
+          username: 'admin',
+          password: adminPassword,
+          encrypted_password: encryptedPassword
+        }]);
 
-    // Se não existem produtos, inserir os padrões
-    if (!existingProducts || existingProducts.length === 0) {
-      console.log('Inserindo produtos padrão...');
-      
-      for (const product of defaultProducts) {
-        const { error } = await supabase
-          .from('products')
-          .insert([{
-            id: product.id,
-            title: product.title,
-            category: product.category,
-            price: product.price,
-            description: product.description,
-            status: product.status,
-            colors: product.colors
-          }]);
-
-        if (error) throw error;
-      }
-
-      console.log('Produtos inseridos com sucesso!');
-    }
-
-    // Verificar se já existem categorias
-    const { data: existingCategories, error: categoriesError } = await supabase
-      .from('categories')
-      .select('id')
-      .limit(1);
-
-    if (categoriesError) throw categoriesError;
-
-    // Se não existem categorias, inserir as padrões
-    if (!existingCategories || existingCategories.length === 0) {
-      console.log('Inserindo categorias padrão...');
-      
-      for (const category of defaultCategories) {
-        const { error } = await supabase
-          .from('categories')
-          .insert([{
-            id: category.id,
-            name: category.name,
-            description: category.description
-          }]);
-
-        if (error) throw error;
-      }
-
-      console.log('Categorias inseridas com sucesso!');
+      if (error) throw error;
+      console.log('Credenciais admin configuradas!');
     }
 
     console.log('Migração concluída com sucesso!');
@@ -196,7 +121,53 @@ async function migrateDataToSupabase() {
   }
 }
 
-// Endpoints da API
+// ENDPOINTS DA API
+
+// Autenticação (CORRIGIDO)
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    
+    console.log('Tentativa de login:', username);
+
+    const { data: credentials, error } = await supabase
+      .from('admin_credentials')
+      .select('*')
+      .eq('username', username)
+      .single();
+
+    if (error || !credentials) {
+      console.log('Usuário não encontrado');
+      return res.status(401).json({ error: "Credenciais inválidas" });
+    }
+
+    // Verificar com senha criptografada
+    const encryptedPassword = simpleEncrypt(password);
+    
+    if (encryptedPassword === credentials.encrypted_password) {
+      res.json({ 
+        success: true, 
+        token: "authenticated_admin_token", 
+        user: { username: username } 
+      });
+    } else {
+      // Fallback para senha em texto puro
+      if (password === credentials.password) {
+        res.json({ 
+          success: true, 
+          token: "authenticated_admin_token", 
+          user: { username: username } 
+        });
+      } else {
+        console.log('Senha incorreta');
+        res.status(401).json({ error: "Credenciais inválidas" });
+      }
+    }
+  } catch (error) {
+    console.error("Erro no login:", error);
+    res.status(500).json({ error: "Erro no processo de login" });
+  }
+});
 
 // Buscar produtos
 app.get("/api/products", async (req, res) => {
@@ -265,7 +236,7 @@ app.post("/api/products", async (req, res) => {
     const { error: deleteError } = await supabase
       .from('products')
       .delete()
-      .neq('id', 0); // Delete all records
+      .neq('id', 0);
 
     if (deleteError) throw deleteError;
 
@@ -308,7 +279,7 @@ app.post("/api/categories", async (req, res) => {
     const { error: deleteError } = await supabase
       .from('categories')
       .delete()
-      .neq('id', ''); // Delete all records
+      .neq('id', '');
 
     if (deleteError) throw deleteError;
 
@@ -329,37 +300,6 @@ app.post("/api/categories", async (req, res) => {
   } catch (error) {
     console.error("Erro ao salvar categorias:", error);
     res.status(500).json({ error: "Erro ao salvar categorias" });
-  }
-});
-
-// Autenticação
-app.post("/api/auth/login", async (req, res) => {
-  try {
-    const { username, password } = req.body;
-    
-    const { data: credentials, error } = await supabase
-      .from('admin_credentials')
-      .select('*')
-      .eq('username', username)
-      .single();
-
-    if (error || !credentials) {
-      return res.status(401).json({ error: "Credenciais inválidas" });
-    }
-
-    // Verificar credenciais (simplificado - em produção usar hash)
-    if (password === credentials.password) {
-      res.json({ 
-        success: true, 
-        token: "authenticated_admin_token", 
-        user: { username: username } 
-      });
-    } else {
-      res.status(401).json({ error: "Credenciais inválidas" });
-    }
-  } catch (error) {
-    console.error("Erro no login:", error);
-    res.status(500).json({ error: "Erro no processo de login" });
   }
 });
 
@@ -393,21 +333,9 @@ app.get("/", (req, res) => {
   });
 });
 
-// Endpoint para migração manual
-app.post("/api/migrate", async (req, res) => {
-  try {
-    await migrateDataToSupabase();
-    res.json({ success: true, message: "Migração concluída com sucesso!" });
-  } catch (error) {
-    console.error("Erro na migração:", error);
-    res.status(500).json({ error: "Erro durante a migração" });
-  }
-});
-
-// Inicializar servidor e migração
+// Inicializar servidor
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log(`Servidor rodando em http://localhost:${PORT}`);
-  console.log('Iniciando migração de dados...');
   await migrateDataToSupabase();
 });
