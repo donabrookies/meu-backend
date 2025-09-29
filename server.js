@@ -17,15 +17,13 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// Cache em memória para velocidade
+// CORREÇÃO: Cache removido para categorias
 let cache = {
   products: null,
-  categories: null,
-  productsTimestamp: 0,
-  categoriesTimestamp: 0
+  productsTimestamp: 0
 };
 
-const CACHE_DURATION = 2 * 60 * 1000; // 2 minutos
+const CACHE_DURATION = 2 * 60 * 1000; // 2 minutos - APENAS PARA PRODUTOS
 
 // Função para criptografar
 function simpleEncrypt(text) {
@@ -98,15 +96,13 @@ function checkAuth(token) {
   return token === "authenticated_admin_token";
 }
 
-// Limpar cache
+// Limpar cache - APENAS PRODUTOS AGORA
 function clearCache() {
   cache = {
     products: null,
-    categories: null,
-    productsTimestamp: 0,
-    categoriesTimestamp: 0
+    productsTimestamp: 0
   };
-  console.log('🔄 Cache limpo');
+  console.log('🔄 Cache de produtos limpo');
 }
 
 // Migrar dados para o Supabase
@@ -222,23 +218,12 @@ app.get("/api/products", async (req, res) => {
   }
 });
 
-// Buscar categorias COM CACHE - CORRIGIDO
+// Buscar categorias SEM CACHE - CORRIGIDO
 app.get("/api/categories", async (req, res) => {
   try {
-    // Cache mais longo para categorias
-    res.set({
-      'Cache-Control': 'public, max-age=600',
-      'X-Content-Type-Options': 'nosniff'
-    });
-
-    // Verificar cache em memória
-    const now = Date.now();
-    if (cache.categories && (now - cache.categoriesTimestamp) < CACHE_DURATION) {
-      console.log('📦 Retornando categorias do cache');
-      return res.json({ categories: cache.categories });
-    }
-
-    console.log('🔄 Buscando categorias do Supabase...');
+    // REMOVIDO CACHE PARA CATEGORIAS
+    console.log('🔄 Buscando categorias SEMPRE DO BANCO (sem cache)...');
+    
     const { data: categories, error } = await supabase
       .from('categories')
       .select('*')
@@ -246,7 +231,6 @@ app.get("/api/categories", async (req, res) => {
 
     if (error) {
       console.error("❌ Erro ao buscar categorias:", error.message);
-      // Em caso de erro, retorna array vazio em vez de categorias padrão
       return res.json({ categories: [] });
     }
 
@@ -260,14 +244,11 @@ app.get("/api/categories", async (req, res) => {
       normalizedCategories = [];
     }
 
-    // Atualizar cache
-    cache.categories = normalizedCategories;
-    cache.categoriesTimestamp = now;
-
+    console.log('📦 Retornando categorias:', normalizedCategories);
     res.json({ categories: normalizedCategories });
   } catch (error) {
     console.error("❌ Erro ao buscar categorias:", error);
-    res.json({ categories: [] }); // Retorna vazio em vez de padrão
+    res.json({ categories: [] });
   }
 });
 
@@ -360,9 +341,6 @@ app.post("/api/categories/add", async (req, res) => {
       throw error;
     }
 
-    // Limpar cache
-    clearCache();
-
     console.log('✅ Categoria adicionada com sucesso:', category.name);
     res.json({ success: true, message: `Categoria "${category.name}" adicionada` });
   } catch (error) {
@@ -446,9 +424,6 @@ app.delete("/api/categories/:categoryId", async (req, res) => {
       throw deleteError;
     }
 
-    // Limpar cache
-    clearCache();
-
     console.log('✅ Categoria excluída com sucesso:', categoryId);
     res.json({ success: true, message: `Categoria "${category.name}" excluída` });
   } catch (error) {
@@ -505,9 +480,6 @@ app.post("/api/categories", async (req, res) => {
       throw upsertError;
     }
 
-    // Limpar cache
-    clearCache();
-
     console.log('✅ Categorias salvas com sucesso!');
     res.json({ success: true, message: `${normalizedCategories.length} categorias salvas` });
   } catch (error) {
@@ -535,18 +507,18 @@ app.get("/api/auth/verify", async (req, res) => {
 // Health check
 app.get("/", (req, res) => {
   res.json({ 
-    message: "🚀 Backend Urban Z OTIMIZADO está funcionando!", 
+    message: "🚀 Backend Urban Z CATEGORIAS CORRIGIDAS está funcionando!", 
     status: "OK",
-    cache: "Ativo",
+    cache: "Ativo apenas para produtos",
     performance: "Turbo",
-    categorias: "Corrigidas"
+    categorias: "SEM CACHE - Sempre atualizadas"
   });
 });
 
-// Endpoint para limpar cache manualmente
+// Endpoint para limpar cache manualmente - APENAS PRODUTOS AGORA
 app.post("/api/cache/clear", (req, res) => {
   clearCache();
-  res.json({ success: true, message: "Cache limpo com sucesso" });
+  res.json({ success: true, message: "Cache de produtos limpo com sucesso" });
 });
 
 // Endpoint para ver categorias do banco (debug)
@@ -571,8 +543,8 @@ app.get("/api/debug/categories", async (req, res) => {
 // Inicializar servidor
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🚀 Servidor CORRIGIDO rodando em http://localhost:${PORT}`);
-  console.log(`💾 Cache ativado: ${CACHE_DURATION/1000}s`);
-  console.log(`✅ Categorias funcionando corretamente`);
+  console.log(`🚀 Servidor CATEGORIAS CORRIGIDAS rodando em http://localhost:${PORT}`);
+  console.log(`💾 Cache ativo APENAS para produtos: ${CACHE_DURATION/1000}s`);
+  console.log(`✅ Categorias SEM CACHE - sempre atualizadas`);
   await migrateDataToSupabase();
 });
