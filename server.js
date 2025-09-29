@@ -17,19 +17,42 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// Função para criptografar (COMPATÍVEL com o frontend)
+// Cache em memória para velocidade
+let cache = {
+  products: null,
+  categories: null,
+  productsTimestamp: 0,
+  categoriesTimestamp: 0
+};
+
+const CACHE_DURATION = 2 * 60 * 1000; // 2 minutos
+
+// Função para criptografar
 function simpleEncrypt(text) {
   return Buffer.from(text).toString('base64').split('').reverse().join('');
 }
 
-// Função para descriptografar (COMPATÍVEL com o frontend)
+// Função para descriptografar
 function simpleDecrypt(encrypted) {
   return Buffer.from(encrypted.split('').reverse().join(''), 'base64').toString('utf8');
 }
 
 // Normalizar categorias
 function normalizeCategories(categories) {
-  if (!Array.isArray(categories)) return [];
+  if (!Array.isArray(categories) || categories.length === 0) {
+    return [
+      {
+        id: 'camisa',
+        name: 'Camisas',
+        description: 'Camisas de diversos modelos e estilos'
+      },
+      {
+        id: 'short',
+        name: 'Shorts',
+        description: 'Shorts para o dia a dia e prática esportiva'
+      }
+    ];
+  }
   
   return categories.map(cat => {
     if (typeof cat === 'string') {
@@ -88,12 +111,21 @@ function checkAuth(token) {
   return token === "authenticated_admin_token";
 }
 
+// Limpar cache
+function clearCache() {
+  cache = {
+    products: null,
+    categories: null,
+    productsTimestamp: 0,
+    categoriesTimestamp: 0
+  };
+}
+
 // Migrar dados para o Supabase
 async function migrateDataToSupabase() {
   try {
     console.log('Iniciando migração de dados para o Supabase...');
     
-    // Configurar credenciais admin com criptografia
     const adminPassword = 'admin123';
     const encryptedPassword = simpleEncrypt(adminPassword);
     
@@ -111,19 +143,18 @@ async function migrateDataToSupabase() {
           encrypted_password: encryptedPassword
         }]);
 
-      if (error) throw error;
-      console.log('Credenciais admin configuradas!');
+      if (error) console.log('Aviso nas credenciais:', error.message);
     }
 
-    console.log('Migração concluída com sucesso!');
+    console.log('Migração concluída!');
   } catch (error) {
-    console.error('Erro durante a migração:', error);
+    console.error('Erro durante a migração:', error.message);
   }
 }
 
 // ENDPOINTS DA API
 
-// Autenticação (CORRIGIDO)
+// Autenticação
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -137,11 +168,9 @@ app.post("/api/auth/login", async (req, res) => {
       .single();
 
     if (error || !credentials) {
-      console.log('Usuário não encontrado');
       return res.status(401).json({ error: "Credenciais inválidas" });
     }
 
-    // Verificar com senha criptografada
     const encryptedPassword = simpleEncrypt(password);
     
     if (encryptedPassword === credentials.encrypted_password) {
@@ -151,7 +180,6 @@ app.post("/api/auth/login", async (req, res) => {
         user: { username: username } 
       });
     } else {
-      // Fallback para senha em texto puro
       if (password === credentials.password) {
         res.json({ 
           success: true, 
@@ -159,7 +187,6 @@ app.post("/api/auth/login", async (req, res) => {
           user: { username: username } 
         });
       } else {
-        console.log('Senha incorreta');
         res.status(401).json({ error: "Credenciais inválidas" });
       }
     }
@@ -169,37 +196,67 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-// Buscar produtos
+// Buscar produtos COM CACHE
 app.get("/api/products", async (req, res) => {
   try {
+    // Cache headers para velocidade
+    res.set({
+      'Cache-Control': 'public, max-age=120',
+      'X-Content-Type-Options': 'nosniff'
+    });
+
+    // Verificar cache em memória
+    const now = Date.now();
+    if (cache.products && (now - cache.productsTimestamp) < CACHE_DURATION) {
+      return res.json({ products: cache.products });
+    }
+
     const { data: products, error } = await supabase
       .from('products')
       .select('*')
       .order('id');
 
-    if (error) throw error;
+    if (error) {
+      console.error("Erro Supabase produtos:", error.message);
+      return res.json({ products: [] });
+    }
 
     const normalizedProducts = normalizeProducts(products || []);
+
+    // Atualizar cache
+    cache.products = normalizedProducts;
+    cache.productsTimestamp = now;
+
     res.json({ products: normalizedProducts });
   } catch (error) {
     console.error("Erro ao buscar produtos:", error);
-    res.status(500).json({ error: "Erro ao buscar produtos" });
+    res.json({ products: [] });
   }
 });
 
-// Buscar categorias
+// Buscar categorias COM CACHE
 app.get("/api/categories", async (req, res) => {
   try {
+    // Cache mais longo para categorias
+    res.set({
+      'Cache-Control': 'public, max-age=600',
+      'X-Content-Type-Options': 'nosniff'
+    });
+
+    // Verificar cache em memória
+    const now = Date.now();
+    if (cache.categories && (now - cache.categoriesTimestamp) < CACHE_DURATION) {
+      return res.json({ categories: cache.categories });
+    }
+
     const { data: categories, error } = await supabase
       .from('categories')
       .select('*')
-      .order('id');
+      .order('name');
 
-    if (error) throw error;
-
-    let normalizedCategories = normalizeCategories(categories || []);
+    let normalizedCategories;
     
-    if (normalizedCategories.length === 0) {
+    if (error || !categories || categories.length === 0) {
       normalizedCategories = [
         {
           id: 'camisa',
@@ -212,12 +269,31 @@ app.get("/api/categories", async (req, res) => {
           description: 'Shorts para o dia a dia e prática esportiva'
         }
       ];
+    } else {
+      normalizedCategories = normalizeCategories(categories);
     }
-    
+
+    // Atualizar cache
+    cache.categories = normalizedCategories;
+    cache.categoriesTimestamp = now;
+
     res.json({ categories: normalizedCategories });
   } catch (error) {
     console.error("Erro ao buscar categorias:", error);
-    res.status(500).json({ error: "Erro ao buscar categorias" });
+    res.json({ 
+      categories: [
+        {
+          id: 'camisa',
+          name: 'Camisas',
+          description: 'Camisas de diversos modelos e estilos'
+        },
+        {
+          id: 'short',
+          name: 'Shorts',
+          description: 'Shorts para o dia a dia e prática esportiva'
+        }
+      ] 
+    });
   }
 });
 
@@ -257,6 +333,9 @@ app.post("/api/products", async (req, res) => {
       if (insertError) throw insertError;
     }
 
+    // Limpar cache após alterações
+    clearCache();
+
     res.json({ success: true });
   } catch (error) {
     console.error("Erro ao salvar produtos:", error);
@@ -264,7 +343,7 @@ app.post("/api/products", async (req, res) => {
   }
 });
 
-// NOVO: Adicionar categoria individual
+// Adicionar categoria individual
 app.post("/api/categories/add", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -300,6 +379,9 @@ app.post("/api/categories/add", async (req, res) => {
 
     if (insertError) throw insertError;
 
+    // Limpar cache
+    clearCache();
+
     res.json({ success: true });
   } catch (error) {
     console.error("Erro ao adicionar categoria:", error);
@@ -307,7 +389,7 @@ app.post("/api/categories/add", async (req, res) => {
   }
 });
 
-// NOVO: Excluir categoria individual
+// Excluir categoria individual
 app.delete("/api/categories/:categoryId", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -363,6 +445,9 @@ app.delete("/api/categories/:categoryId", async (req, res) => {
 
     if (deleteError) throw deleteError;
 
+    // Limpar cache
+    clearCache();
+
     res.json({ success: true });
   } catch (error) {
     console.error("Erro ao excluir categoria:", error);
@@ -370,7 +455,7 @@ app.delete("/api/categories/:categoryId", async (req, res) => {
   }
 });
 
-// Salvar categorias (mantido para compatibilidade)
+// Salvar categorias
 app.post("/api/categories", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -404,6 +489,9 @@ app.post("/api/categories", async (req, res) => {
       if (insertError) throw insertError;
     }
 
+    // Limpar cache
+    clearCache();
+
     res.json({ success: true });
   } catch (error) {
     console.error("Erro ao salvar categorias:", error);
@@ -430,20 +518,23 @@ app.get("/api/auth/verify", async (req, res) => {
 // Health check
 app.get("/", (req, res) => {
   res.json({ 
-    message: "Backend Urban Z com Supabase está funcionando!", 
+    message: "🚀 Backend Urban Z OTIMIZADO está funcionando!", 
     status: "OK",
-    database: "Supabase",
-    endpoints: {
-      products: "GET /api/products",
-      categories: "GET /api/categories",
-      login: "POST /api/auth/login"
-    }
+    cache: "Ativo",
+    performance: "Turbo"
   });
+});
+
+// Endpoint para limpar cache manualmente
+app.post("/api/cache/clear", (req, res) => {
+  clearCache();
+  res.json({ success: true, message: "Cache limpo" });
 });
 
 // Inicializar servidor
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`Servidor rodando em http://localhost:${PORT}`);
+  console.log(`🚀 Servidor OTIMIZADO rodando em http://localhost:${PORT}`);
+  console.log(`💾 Cache ativado: ${CACHE_DURATION/1000}s`);
   await migrateDataToSupabase();
 });
