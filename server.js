@@ -37,22 +37,9 @@ function simpleDecrypt(encrypted) {
   return Buffer.from(encrypted.split('').reverse().join(''), 'base64').toString('utf8');
 }
 
-// Normalizar categorias
+// Normalizar categorias - CORRIGIDA
 function normalizeCategories(categories) {
-  if (!Array.isArray(categories) || categories.length === 0) {
-    return [
-      {
-        id: 'camisa',
-        name: 'Camisas',
-        description: 'Camisas de diversos modelos e estilos'
-      },
-      {
-        id: 'short',
-        name: 'Shorts',
-        description: 'Shorts para o dia a dia e prática esportiva'
-      }
-    ];
-  }
+  if (!Array.isArray(categories)) return [];
   
   return categories.map(cat => {
     if (typeof cat === 'string') {
@@ -119,6 +106,7 @@ function clearCache() {
     productsTimestamp: 0,
     categoriesTimestamp: 0
   };
+  console.log('🔄 Cache limpo');
 }
 
 // Migrar dados para o Supabase
@@ -234,7 +222,7 @@ app.get("/api/products", async (req, res) => {
   }
 });
 
-// Buscar categorias COM CACHE
+// Buscar categorias COM CACHE - CORRIGIDO
 app.get("/api/categories", async (req, res) => {
   try {
     // Cache mais longo para categorias
@@ -246,31 +234,30 @@ app.get("/api/categories", async (req, res) => {
     // Verificar cache em memória
     const now = Date.now();
     if (cache.categories && (now - cache.categoriesTimestamp) < CACHE_DURATION) {
+      console.log('📦 Retornando categorias do cache');
       return res.json({ categories: cache.categories });
     }
 
+    console.log('🔄 Buscando categorias do Supabase...');
     const { data: categories, error } = await supabase
       .from('categories')
       .select('*')
       .order('name');
 
-    let normalizedCategories;
+    if (error) {
+      console.error("❌ Erro ao buscar categorias:", error.message);
+      // Em caso de erro, retorna array vazio em vez de categorias padrão
+      return res.json({ categories: [] });
+    }
+
+    let normalizedCategories = [];
     
-    if (error || !categories || categories.length === 0) {
-      normalizedCategories = [
-        {
-          id: 'camisa',
-          name: 'Camisas',
-          description: 'Camisas de diversos modelos e estilos'
-        },
-        {
-          id: 'short',
-          name: 'Shorts',
-          description: 'Shorts para o dia a dia e prática esportiva'
-        }
-      ];
-    } else {
+    if (categories && categories.length > 0) {
       normalizedCategories = normalizeCategories(categories);
+      console.log(`✅ ${normalizedCategories.length} categorias carregadas do banco`);
+    } else {
+      console.log('ℹ️ Nenhuma categoria encontrada no banco');
+      normalizedCategories = [];
     }
 
     // Atualizar cache
@@ -279,21 +266,8 @@ app.get("/api/categories", async (req, res) => {
 
     res.json({ categories: normalizedCategories });
   } catch (error) {
-    console.error("Erro ao buscar categorias:", error);
-    res.json({ 
-      categories: [
-        {
-          id: 'camisa',
-          name: 'Camisas',
-          description: 'Camisas de diversos modelos e estilos'
-        },
-        {
-          id: 'short',
-          name: 'Shorts',
-          description: 'Shorts para o dia a dia e prática esportiva'
-        }
-      ] 
-    });
+    console.error("❌ Erro ao buscar categorias:", error);
+    res.json({ categories: [] }); // Retorna vazio em vez de padrão
   }
 });
 
@@ -306,6 +280,8 @@ app.post("/api/products", async (req, res) => {
     }
     
     const { products } = req.body;
+    console.log(`💾 Salvando ${products?.length || 0} produtos...`);
+    
     const normalizedProducts = normalizeProducts(products);
 
     // Deletar todos os produtos existentes
@@ -314,36 +290,44 @@ app.post("/api/products", async (req, res) => {
       .delete()
       .neq('id', 0);
 
-    if (deleteError) throw deleteError;
+    if (deleteError) {
+      console.error('❌ Erro ao deletar produtos:', deleteError);
+      throw deleteError;
+    }
 
-    // Inserir os novos produtos
-    for (const product of normalizedProducts) {
+    // Inserir os novos produtos em lote (mais eficiente)
+    if (normalizedProducts.length > 0) {
+      const productsToInsert = normalizedProducts.map(product => ({
+        title: product.title,
+        category: product.category,
+        price: product.price,
+        description: product.description,
+        status: product.status,
+        colors: product.colors
+      }));
+
       const { error: insertError } = await supabase
         .from('products')
-        .insert([{
-          id: product.id,
-          title: product.title,
-          category: product.category,
-          price: product.price,
-          description: product.description,
-          status: product.status,
-          colors: product.colors
-        }]);
+        .insert(productsToInsert);
 
-      if (insertError) throw insertError;
+      if (insertError) {
+        console.error('❌ Erro ao inserir produtos:', insertError);
+        throw insertError;
+      }
     }
 
     // Limpar cache após alterações
     clearCache();
 
-    res.json({ success: true });
+    console.log('✅ Produtos salvos com sucesso!');
+    res.json({ success: true, message: `${normalizedProducts.length} produtos salvos` });
   } catch (error) {
-    console.error("Erro ao salvar produtos:", error);
-    res.status(500).json({ error: "Erro ao salvar produtos" });
+    console.error("❌ Erro ao salvar produtos:", error);
+    res.status(500).json({ error: "Erro ao salvar produtos: " + error.message });
   }
 });
 
-// Adicionar categoria individual
+// Adicionar categoria individual - CORRIGIDO
 app.post("/api/categories/add", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -357,39 +341,37 @@ app.post("/api/categories/add", async (req, res) => {
       return res.status(400).json({ error: "Dados da categoria inválidos" });
     }
 
-    // Verificar se já existe
-    const { data: existing } = await supabase
-      .from('categories')
-      .select('id')
-      .eq('id', category.id)
-      .single();
+    console.log(`➕ Adicionando categoria: ${category.name} (ID: ${category.id})`);
 
-    if (existing) {
-      return res.status(400).json({ error: "Categoria já existe" });
-    }
-
-    // Inserir nova categoria
-    const { error: insertError } = await supabase
+    // Usar upsert em vez de insert para evitar erro se já existir
+    const { data, error } = await supabase
       .from('categories')
-      .insert([{
+      .upsert([{
         id: category.id,
         name: category.name,
         description: category.description || `Categoria de ${category.name}`
-      }]);
+      }], {
+        onConflict: 'id',
+        ignoreDuplicates: false
+      });
 
-    if (insertError) throw insertError;
+    if (error) {
+      console.error('❌ Erro ao adicionar categoria:', error);
+      throw error;
+    }
 
     // Limpar cache
     clearCache();
 
-    res.json({ success: true });
+    console.log('✅ Categoria adicionada com sucesso:', category.name);
+    res.json({ success: true, message: `Categoria "${category.name}" adicionada` });
   } catch (error) {
-    console.error("Erro ao adicionar categoria:", error);
-    res.status(500).json({ error: "Erro ao adicionar categoria" });
+    console.error("❌ Erro ao adicionar categoria:", error);
+    res.status(500).json({ error: "Erro ao adicionar categoria: " + error.message });
   }
 });
 
-// Excluir categoria individual
+// Excluir categoria individual - CORRIGIDO
 app.delete("/api/categories/:categoryId", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -398,8 +380,9 @@ app.delete("/api/categories/:categoryId", async (req, res) => {
     }
     
     const { categoryId } = req.params;
+    console.log(`🗑️ Tentando excluir categoria: ${categoryId}`);
     
-    // Verificar se a categoria existe
+    // Primeiro verificar se a categoria existe
     const { data: category, error: fetchError } = await supabase
       .from('categories')
       .select('*')
@@ -407,55 +390,74 @@ app.delete("/api/categories/:categoryId", async (req, res) => {
       .single();
 
     if (fetchError || !category) {
+      console.log('❌ Categoria não encontrada:', categoryId);
       return res.status(404).json({ error: "Categoria não encontrada" });
     }
+
+    console.log('✅ Categoria encontrada:', category.name);
 
     // Verificar se há produtos usando esta categoria
     const { data: productsInCategory, error: productsError } = await supabase
       .from('products')
-      .select('id')
+      .select('id, title')
       .eq('category', categoryId);
 
-    if (productsError) throw productsError;
+    if (productsError) {
+      console.error('❌ Erro ao verificar produtos:', productsError);
+      throw productsError;
+    }
 
-    // Se há produtos, mover para uma categoria padrão
+    // Se há produtos, mover para a primeira categoria disponível
     if (productsInCategory && productsInCategory.length > 0) {
-      const { data: defaultCategory } = await supabase
+      console.log(`🔄 Movendo ${productsInCategory.length} produtos da categoria...`);
+      
+      // Buscar outra categoria para mover os produtos
+      const { data: otherCategories } = await supabase
         .from('categories')
         .select('id')
         .neq('id', categoryId)
-        .limit(1)
-        .single();
+        .limit(1);
 
-      if (defaultCategory) {
+      if (otherCategories && otherCategories.length > 0) {
+        const newCategoryId = otherCategories[0].id;
         const { error: updateError } = await supabase
           .from('products')
-          .update({ category: defaultCategory.id })
+          .update({ category: newCategoryId })
           .eq('category', categoryId);
 
-        if (updateError) throw updateError;
+        if (updateError) {
+          console.error('❌ Erro ao mover produtos:', updateError);
+          throw updateError;
+        }
+        console.log(`✅ ${productsInCategory.length} produtos movidos para categoria: ${newCategoryId}`);
+      } else {
+        console.log('⚠️ Nenhuma outra categoria encontrada, produtos não movidos');
       }
     }
 
-    // Deletar a categoria
+    // Agora deletar a categoria
     const { error: deleteError } = await supabase
       .from('categories')
       .delete()
       .eq('id', categoryId);
 
-    if (deleteError) throw deleteError;
+    if (deleteError) {
+      console.error('❌ Erro ao excluir categoria:', deleteError);
+      throw deleteError;
+    }
 
     // Limpar cache
     clearCache();
 
-    res.json({ success: true });
+    console.log('✅ Categoria excluída com sucesso:', categoryId);
+    res.json({ success: true, message: `Categoria "${category.name}" excluída` });
   } catch (error) {
-    console.error("Erro ao excluir categoria:", error);
-    res.status(500).json({ error: "Erro ao excluir categoria" });
+    console.error("❌ Erro ao excluir categoria:", error);
+    res.status(500).json({ error: "Erro ao excluir categoria: " + error.message });
   }
 });
 
-// Salvar categorias
+// Salvar categorias - CORRIGIDO
 app.post("/api/categories", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -464,38 +466,53 @@ app.post("/api/categories", async (req, res) => {
     }
     
     const { categories } = req.body;
+    console.log(`💾 Salvando ${categories?.length || 0} categorias...`);
+    
     const normalizedCategories = normalizeCategories(categories);
 
-    // Deletar todas as categorias existentes
+    if (normalizedCategories.length === 0) {
+      return res.status(400).json({ error: "Nenhuma categoria fornecida" });
+    }
+
+    // Deletar categorias que não estão na nova lista
+    const categoryIds = normalizedCategories.map(cat => cat.id);
+    
     const { error: deleteError } = await supabase
       .from('categories')
       .delete()
-      .gte('id', '');
+      .not('id', 'in', `(${categoryIds.map(id => `'${id}'`).join(',')})`);
 
     if (deleteError && !deleteError.message.includes('No rows found')) {
+      console.error('❌ Erro ao deletar categorias antigas:', deleteError);
       throw deleteError;
     }
 
-    // Inserir as novas categorias
-    for (const category of normalizedCategories) {
-      const { error: insertError } = await supabase
-        .from('categories')
-        .upsert([{
-          id: category.id,
-          name: category.name,
-          description: category.description
-        }], { onConflict: 'id' });
+    // Inserir/atualizar as categorias
+    const categoriesToUpsert = normalizedCategories.map(category => ({
+      id: category.id,
+      name: category.name,
+      description: category.description
+    }));
 
-      if (insertError) throw insertError;
+    const { error: upsertError } = await supabase
+      .from('categories')
+      .upsert(categoriesToUpsert, { 
+        onConflict: 'id'
+      });
+
+    if (upsertError) {
+      console.error('❌ Erro ao salvar categorias:', upsertError);
+      throw upsertError;
     }
 
     // Limpar cache
     clearCache();
 
-    res.json({ success: true });
+    console.log('✅ Categorias salvas com sucesso!');
+    res.json({ success: true, message: `${normalizedCategories.length} categorias salvas` });
   } catch (error) {
-    console.error("Erro ao salvar categorias:", error);
-    res.status(500).json({ error: "Erro ao salvar categorias" });
+    console.error("❌ Erro ao salvar categorias:", error);
+    res.status(500).json({ error: "Erro ao salvar categorias: " + error.message });
   }
 });
 
@@ -521,20 +538,41 @@ app.get("/", (req, res) => {
     message: "🚀 Backend Urban Z OTIMIZADO está funcionando!", 
     status: "OK",
     cache: "Ativo",
-    performance: "Turbo"
+    performance: "Turbo",
+    categorias: "Corrigidas"
   });
 });
 
 // Endpoint para limpar cache manualmente
 app.post("/api/cache/clear", (req, res) => {
   clearCache();
-  res.json({ success: true, message: "Cache limpo" });
+  res.json({ success: true, message: "Cache limpo com sucesso" });
+});
+
+// Endpoint para ver categorias do banco (debug)
+app.get("/api/debug/categories", async (req, res) => {
+  try {
+    const { data: categories, error } = await supabase
+      .from('categories')
+      .select('*')
+      .order('name');
+    
+    if (error) throw error;
+    
+    res.json({ 
+      categories: categories || [],
+      count: categories ? categories.length : 0 
+    });
+  } catch (error) {
+    res.json({ categories: [], error: error.message });
+  }
 });
 
 // Inicializar servidor
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🚀 Servidor OTIMIZADO rodando em http://localhost:${PORT}`);
+  console.log(`🚀 Servidor CORRIGIDO rodando em http://localhost:${PORT}`);
   console.log(`💾 Cache ativado: ${CACHE_DURATION/1000}s`);
+  console.log(`✅ Categorias funcionando corretamente`);
   await migrateDataToSupabase();
 });
