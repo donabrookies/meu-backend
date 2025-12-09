@@ -58,38 +58,36 @@ function normalizeCategories(categories) {
   }).filter(cat => cat !== null);
 }
 
-// Normalizar produtos - CORREÇÃO CRÍTICA
+// Normalizar produtos - VERSÃO CORRIGIDA
 function normalizeProducts(products) {
   if (!Array.isArray(products)) return [];
   
-  return products.map(product => {
-    // CORREÇÃO: Garantir que colors seja sempre um array
+  return products.map((product, index) => {
+    // Garantir que temos um ID
+    const id = product.id || index + 1;
+    
+    // Garantir que colors seja um array válido
     let colors = [];
     
     if (product.colors && Array.isArray(product.colors)) {
       colors = product.colors.map(color => ({
-        name: color.name || 'Sem nome',
+        name: color.name || 'Padrão',
         image: color.image || 'https://via.placeholder.com/400x300',
         sizes: Array.isArray(color.sizes) ? color.sizes.map(size => ({
-          name: size.name || 'Tamanho',
+          name: String(size.name || 'M'),
           stock: parseInt(size.stock) || 0
-        })) : []
+        })) : [
+          { name: 'P', stock: 0 },
+          { name: 'M', stock: 0 },
+          { name: 'G', stock: 0 },
+          { name: 'GG', stock: 0 }
+        ]
       }));
-    } else if (product.sizes) {
-      // Para compatibilidade com dados antigos
-      colors = [{
-        name: product.color || 'Padrão',
-        image: product.image || 'https://via.placeholder.com/400x300',
-        sizes: Array.isArray(product.sizes) ? product.sizes.map(size => ({
-          name: size.name || 'Tamanho',
-          stock: parseInt(size.stock) || 0
-        })) : []
-      }];
     } else {
-      // Garantir pelo menos uma cor
+      // Estrutura padrão se não houver cores
       colors = [{
         name: 'Padrão',
-        image: 'https://via.placeholder.com/400x300',
+        image: product.image || 'https://via.placeholder.com/400x300',
         sizes: [
           { name: 'P', stock: 0 },
           { name: 'M', stock: 0 },
@@ -100,8 +98,8 @@ function normalizeProducts(products) {
     }
     
     return {
-      id: product.id || 0,
-      title: product.title || 'Sem título',
+      id: id,
+      title: product.title || 'Produto sem nome',
       category: product.category || 'camisa',
       price: parseFloat(product.price) || 0,
       description: product.description || 'Sem descrição',
@@ -159,7 +157,7 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-// Buscar produtos COM CACHE
+// Buscar produtos
 app.get("/api/products", async (req, res) => {
   try {
     // Cache headers para velocidade
@@ -171,9 +169,11 @@ app.get("/api/products", async (req, res) => {
     // Verificar cache em memória
     const now = Date.now();
     if (cache.products && (now - cache.productsTimestamp) < CACHE_DURATION) {
+      console.log('📦 Retornando produtos do cache');
       return res.json({ products: cache.products });
     }
 
+    console.log('🔄 Buscando produtos do Supabase...');
     const { data: products, error } = await supabase
       .from('products')
       .select('*')
@@ -184,6 +184,7 @@ app.get("/api/products", async (req, res) => {
       return res.json({ products: [] });
     }
 
+    console.log(`✅ ${products?.length || 0} produtos encontrados`);
     const normalizedProducts = normalizeProducts(products || []);
 
     // Atualizar cache
@@ -197,7 +198,7 @@ app.get("/api/products", async (req, res) => {
   }
 });
 
-// Buscar categorias SEM CACHE
+// Buscar categorias
 app.get("/api/categories", async (req, res) => {
   try {
     console.log('🔄 Buscando categorias do banco...');
@@ -229,7 +230,7 @@ app.get("/api/categories", async (req, res) => {
   }
 });
 
-// Salvar produtos - CORREÇÃO CRÍTICA
+// Salvar produtos - VERSÃO CORRIGIDA
 app.post("/api/products", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -238,12 +239,18 @@ app.post("/api/products", async (req, res) => {
     }
     
     const { products } = req.body;
-    console.log(`💾 Salvando ${products?.length || 0} produtos...`);
+    console.log(`💾 Recebendo ${products?.length || 0} produtos para salvar...`);
     
+    if (!products || !Array.isArray(products)) {
+      return res.status(400).json({ error: "Dados de produtos inválidos" });
+    }
+
     // Normalizar os produtos antes de salvar
-    const normalizedProducts = normalizeProducts(products || []);
+    const normalizedProducts = normalizeProducts(products);
+    console.log(`✅ ${normalizedProducts.length} produtos normalizados`);
 
     // Deletar todos os produtos existentes
+    console.log('🗑️  Limpando produtos antigos...');
     const { error: deleteError } = await supabase
       .from('products')
       .delete()
@@ -251,13 +258,15 @@ app.post("/api/products", async (req, res) => {
 
     if (deleteError && !deleteError.message.includes('No rows found')) {
       console.error('❌ Erro ao deletar produtos:', deleteError);
-      throw deleteError;
+      // Continuar mesmo se não houver produtos para deletar
     }
 
-    // Inserir os novos produtos
+    // Inserir os novos produtos (em batches se for muito grande)
     if (normalizedProducts.length > 0) {
+      console.log(`📤 Inserindo ${normalizedProducts.length} produtos...`);
+      
+      // Preparar dados para inserção
       const productsToInsert = normalizedProducts.map(product => ({
-        id: product.id,
         title: product.title,
         category: product.category,
         price: product.price,
@@ -266,20 +275,50 @@ app.post("/api/products", async (req, res) => {
         colors: product.colors
       }));
 
-      const { error: insertError } = await supabase
+      const { data, error: insertError } = await supabase
         .from('products')
-        .insert(productsToInsert);
+        .insert(productsToInsert)
+        .select();
 
       if (insertError) {
         console.error('❌ Erro ao inserir produtos:', insertError);
-        throw insertError;
+        
+        // Tentar inserir um por um para debug
+        console.log('🔄 Tentando inserir produtos individualmente para debug...');
+        const errors = [];
+        const successful = [];
+        
+        for (const product of productsToInsert) {
+          try {
+            const { error: singleError } = await supabase
+              .from('products')
+              .insert(product);
+            
+            if (singleError) {
+              errors.push({ product: product.title, error: singleError.message });
+              console.error(`❌ Erro ao inserir ${product.title}:`, singleError.message);
+            } else {
+              successful.push(product.title);
+            }
+          } catch (singleError) {
+            errors.push({ product: product.title, error: singleError.message });
+          }
+        }
+        
+        if (errors.length > 0) {
+          throw new Error(`Falha ao inserir alguns produtos: ${JSON.stringify(errors)}`);
+        }
+        
+        console.log(`✅ ${successful.length} produtos inseridos individualmente`);
+      } else {
+        console.log(`✅ ${data?.length || 0} produtos inseridos com sucesso`);
       }
     }
 
     // Limpar cache após alterações
     clearCache();
 
-    console.log('✅ Produtos salvos com sucesso!');
+    console.log('🎉 Produtos salvos com sucesso!');
     res.json({ 
       success: true, 
       message: `${normalizedProducts.length} produtos salvos`,
@@ -289,7 +328,7 @@ app.post("/api/products", async (req, res) => {
     console.error("❌ Erro ao salvar produtos:", error);
     res.status(500).json({ 
       error: "Erro ao salvar produtos: " + error.message,
-      details: error 
+      details: error.message 
     });
   }
 });
@@ -503,9 +542,10 @@ app.get("/api/auth/verify", async (req, res) => {
 // Health check
 app.get("/", (req, res) => {
   res.json({ 
-    message: "🚀 Backend Urban Z está funcionando!", 
+    message: "🚀 Backend Urban Z v2.0 está funcionando!", 
     status: "OK",
-    version: "2.0.0"
+    version: "2.0.0",
+    features: ["Produtos com cores", "Categorias", "Autenticação"]
   });
 });
 
@@ -515,28 +555,38 @@ app.post("/api/cache/clear", (req, res) => {
   res.json({ success: true, message: "Cache de produtos limpo com sucesso" });
 });
 
-// Endpoint para ver categorias do banco (debug)
-app.get("/api/debug/categories", async (req, res) => {
+// Endpoint para ver estrutura da tabela (debug)
+app.get("/api/debug/tables", async (req, res) => {
   try {
-    const { data: categories, error } = await supabase
+    // Verificar estrutura da tabela products
+    const { data: products, error: productsError } = await supabase
+      .from('products')
+      .select('*')
+      .limit(1);
+    
+    // Verificar estrutura da tabela categories
+    const { data: categories, error: categoriesError } = await supabase
       .from('categories')
       .select('*')
-      .order('name');
-    
-    if (error) throw error;
+      .limit(1);
     
     res.json({ 
-      categories: categories || [],
-      count: categories ? categories.length : 0 
+      products_structure: productsError ? productsError.message : 'OK',
+      categories_structure: categoriesError ? categoriesError.message : 'OK',
+      sample_product: products && products.length > 0 ? {
+        columns: Object.keys(products[0]),
+        has_colors: 'colors' in products[0]
+      } : null
     });
   } catch (error) {
-    res.json({ categories: [], error: error.message });
+    res.json({ error: error.message });
   }
 });
 
 // Inicializar servidor
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`🚀 Servidor Urban Z rodando em http://localhost:${PORT}`);
+  console.log(`🚀 Servidor Urban Z v2.0 rodando em http://localhost:${PORT}`);
   console.log(`📦 Sistema de produtos e categorias pronto!`);
+  console.log(`🔧 Para verificar a estrutura, acesse: http://localhost:${PORT}/api/debug/tables`);
 });
